@@ -1,197 +1,124 @@
-# 返事音声の自動再生（TTS Reply）設計書
+# 返事音声の自動再生（Reply audio）— MVP設計書
 
 - 作成日：2026-11-04
-- 対象ブランチ：`feature/tts-reply-playback`（`master` = 公式 `coredevices/mobileapp@38ab8a0` から分岐）
-- 元資料：`pebble_index01_ios_tts_modification_spec.md`（要件定義・改修指示書）
+- ブランチ：`feature/tts-reply-playback`（`master` = 公式 `coredevices/mobileapp@38ab8a0` から分岐）
+- 方針：**一番簡単な仕組みで、まず動くところまで**。細かい制御は後回し。
 
-## 1. やりたいこと
+## 1. やること
 
 ```text
 [既存・変更しない]
-リング → iPhone Pebbleアプリ（録音・文字起こし）→ Webhook → Mac（AIエージェント + TTS）
+リング → iPhone Pebbleアプリ（録音・文字起こし）→ Webhook → Mac（AIエージェント）
 
-[今回作る]
-Mac の返事置き場 ──(iPhoneが取りに行く)──▶ iPhone Pebbleアプリ
-                                              ├ 返事音声をスピーカーで自動再生
-                                              └ 返事ログ（文字 + 音声の聞き直し）
+[今回作ったもの]
+Mac: reply_server.py（返事置き場）
+  ▲ エージェントが返事を登録（文字 + 音声）
+  │
+  └── iPhoneが3秒ごとに「新しい返事ある？」と取りに行く
+        ├ 新しい返事の音声を自動再生（届いた順に1件ずつ）
+        └ 返事ログに保存（文字 + 音声。あとから再生できる）
 ```
 
-- リングで話す → Macのエージェントが返事を作る → **iPhoneが操作なしで返事を声で流す**。
-- 1回の発話に対して返事は**複数回**ある（すぐ返る1回目、数分〜数十分後の結果）。
-- 聞き逃した返事は、アプリ内の**返事ログで文字でも音声でも確認・再生**できる。
+前提：ロック中・スリープ中でも、リング録音→文字起こしまでアプリが動いている（実機確認済み）。返事の取得と再生も同じくアプリが動いている間にバックグラウンドで行う。
 
-## 2. 前提（確認済みの事実）
+## 2. 決めたこと（MVP）
 
-| 事実 | 根拠 |
+| 項目 | 内容 |
 |---|---|
-| ロック中・スリープ中でも、リング録音→文字起こし→Webhook送信がiPhone上で完了している | ユーザー実機確認（2026-11-04） |
-| iOSのバックグラウンドモードに `audio` / `bluetooth-central` / `remote-notification` / `fetch` が既に宣言済み | `iosApp/iosApp/Info.plist:164-171` |
-| Webhookは録音ごとに固定ID `X-Index-Delivery` を送る（= 返事の紐付けキーに使える） | `experimental/.../external/indexwebhook/INDEX_WEBHOOK_API.md`、`IndexWebhookApi.kt` |
-| M4A(AAC)をバイト列から再生する既存プレイヤーがある（iOS: `AVAudioPlayer`、Playbackカテゴリ） | `experimental/src/commonMain/kotlin/coredevices/ring/util/AudioPlayer.kt`、`AudioPlayer.ios.kt` |
-| 永続キュー＋再試行の既存基盤がある | `util/src/commonMain/kotlin/coredevices/util/queue/PersistentQueueScheduler.kt` |
-| Ringのデータベースは Room（現在 version 45） | `experimental/.../database/room/RingDatabase.kt:101` |
+| 届け方 | iPhoneが3秒ごとにMacへ問い合わせ（ポーリング） |
+| 通信 | HTTP（またはHTTPS）＋トークン（`Authorization: Bearer`） |
+| 音声の渡し方 | JSONの中にbase64で入れる（音声用の別URLなし） |
+| 音声形式 | M4A推奨（MP3・WAVも可） |
+| 再生 | 既存の `AudioPlayer.playAAC()` を使用。マナーモード中・音楽再生中も鳴らす |
+| 自動再生しないもの | 作成から15分以上経った返事（長時間オフライン後にまとめて鳴るのを防ぐ）。ログには残る |
+| 返事ログ | 直近200件。文字・日時・未再生マーク（●）・再生ボタン |
+| 保存場所 | ログ：アプリ設定（Settings）、音声：アプリのデータフォルダ `replies/` |
+| 録音との紐付け | 返事に `request_id`（Webhookの `X-Index-Delivery`）を任意で付けられる。MVPでは表示に使わない |
 
-この事実から、**返事の受信と再生も、録音処理と同じくアプリが動いている間にバックグラウンドで行う**設計とする。
+## 3. Mac側API
 
-## 3. 方針
-
-1. **既存の録音・文字起こし・Webhook処理は一切変更しない。** 返事機能は独立したパッケージとして追加する。
-2. **iPhoneがMacへ取りに行く（ロングポーリング）。** iPhoneは「新しい返事があれば返して、なければ最大25秒待って」というリクエストを繰り返す。チャットアプリ等で一般的な方式で、Mac側も単純なHTTPSサーバーで済む。
-3. **音声形式は M4A(AAC)。** 既存の `AudioPlayer.playAAC()` をそのまま使う。
-4. **共通コード（commonMain）で作る。** プレイヤーがAndroidにもあるので、Androidでもほぼそのまま動く（`CLAUDE.md` の両OS対応ルールに沿う）。
-5. 数十分後の返事も同じ仕組みで受け取る。実機で取りこぼしが出た場合のみ、追加対策（プッシュ通知等）を別途検討する。
-
-## 4. Mac側API（返事置き場）の仕様
-
-Mac側はこの仕様で新規に作る。すべて **HTTPS**、すべてのリクエストに `Authorization: Bearer <token>` を付ける。
-
-### 4.1 返事一覧の取得（ロングポーリング）
+### 返事の取得（iPhone → Mac）
 
 ```
-GET /v1/replies?after=<cursor>&wait=25
+GET /replies?after=<最後に受け取ったid>
+Authorization: Bearer <token>
 ```
-
-- `after`：前回受け取った最後の `cursor`。初回は省略（＝直近の未取得分）。
-- `wait`：新しい返事がないとき、最大何秒待ってから空で返すか。
-- 新しい返事ができたら、待たずに即座に返す。
-
-レスポンス `200 OK`：
 
 ```json
 {
   "replies": [
     {
-      "reply_id": "rep_01JC...",
-      "request_id": "<X-Index-Delivery の値>",
-      "cursor": 1042,
-      "kind": "ack",
-      "text": "了解、調べます。",
-      "audio": {
-        "url": "/v1/replies/rep_01JC.../audio",
-        "content_type": "audio/mp4",
-        "size_bytes": 48211,
-        "duration_ms": 2300
-      },
-      "created_at": "2026-11-04T09:00:00Z",
-      "expires_at": "2026-11-04T10:00:00Z"
+      "id": 2,
+      "request_id": "rec-123",
+      "text": "結果です。…",
+      "audio_base64": "AAAAHGZ0eXBNNEEg...",
+      "created_at": 1793786333807
     }
-  ],
-  "next_cursor": 1042
+  ]
 }
 ```
 
-| 項目 | 内容 |
-|---|---|
-| `reply_id` | 返事ごとに一意。iPhone側の重複排除キー |
-| `request_id` | どの録音への返事か（Webhookの `X-Index-Delivery`）。不明なら `null` 可 |
-| `cursor` | Mac側で単調増加する番号。取りこぼし防止用 |
-| `kind` | `ack`（すぐの返事）/ `result`（結果）/ `info`（その他）。表示用 |
-| `text` | 返事の文字。返事ログに表示 |
-| `audio` | 音声がない返事は `null`（文字だけログに残る） |
-| `expires_at` | これを過ぎた返事は**自動再生しない**（ログには残す）。省略時は作成から60分 |
+- `id`：1から増える番号。iPhoneは最後に受け取った `id` を覚え、次回 `after` に付ける。
+- `audio_base64`：なければ `null`（文字だけログに残る）。
+- `created_at`：Unix時刻（ミリ秒）。
 
-### 4.2 音声の取得
+### 返事の登録（エージェント → Mac）
 
 ```
-GET /v1/replies/{reply_id}/audio
+POST /replies
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"text": "了解、調べます", "request_id": "rec-123", "audio_base64": "..."}
 ```
 
-- `200 OK`、`Content-Type: audio/mp4`、本体はM4A。
-- iPhoneは **5MB超、または `audio/mp4` 以外は拒否**する。
-- 音声URLは同じホスト配下の相対パスのみ受け付ける（別ホストへのリダイレクトは拒否）。
+コマンドでも登録できる（`tools/reply-server/README.md` 参照）。
 
-### 4.3 エラー
+## 4. 追加・変更したファイル
 
-- `401`：トークン不一致 → iPhoneはポーリングを止め、設定画面にエラーを表示する。
-- `5xx` / 通信エラー：数秒〜最大1分の間隔で再試行する。
+新規（`experimental/src/commonMain/kotlin/coredevices/ring/external/replyaudio/`）：
 
-## 5. iPhoneアプリ側の構成
-
-追加先：`experimental/src/commonMain/kotlin/coredevices/ring/external/replyaudio/`（新規パッケージ）
-
-| 部品 | 役割 |
+| ファイル | 役割 |
 |---|---|
-| `ReplyAudioPreferences` | MacのURL、ON/OFF。トークンは既存の署名シークレットと同じくKeychainに保存 |
-| `ReplyApi` | 4章のAPIクライアント（Ktor、既存 `ApiClient` を継承） |
-| `ReplyPoller` | アプリが動いている間、ロングポーリングを繰り返す。新着を保存して再生キューへ渡す |
-| `ReplyEntity` / `ReplyDao` | 返事ログのDB（Room、version 45→46のマイグレーション追加） |
-| `ReplyPlaybackQueue` | 届いた順に1件ずつ再生。重複排除・期限切れスキップ |
-| 返事ログ画面 | 文字一覧、聞いたかどうかの目印、再生ボタン |
-| 設定シート | URL・トークン入力、接続テスト、ON/OFF（Index設定の「Webhook」の隣に追加） |
+| `ReplyAudioModels.kt` | 返事のデータ型、判定ルール（新着の抽出・自動再生するか・ログの上限） |
+| `ReplyAudioPreferences.kt` | URL・トークン・ON/OFF・最後に受け取ったid |
+| `ReplyAudioApi.kt` | `GET /replies` のクライアント |
+| `ReplyAudioLog.kt` | 返事ログ（200件）と音声ファイルの保存 |
+| `ReplyAudioService.kt` | 3秒ごとのポーリング、順番再生 |
+| `ReplyAudioViewModel.kt` / `ReplyAudioDialog.kt` | 設定と返事ログの画面 |
 
-### 5.1 返事の流れ
+既存ファイルへの変更（呼び出しの追加のみ）：
 
-```text
-ReplyPoller ─ GET /v1/replies?after=… ─▶ Mac
-   │ 新着あり
-   ├─ ReplyEntity を保存（文字）
-   ├─ 音声をダウンロードして端末に保存
-   └─ ReplyPlaybackQueue へ
-          ├ 期限切れ → 再生しない（ログに「未再生」で残る）
-          ├ 再生中 → 終わってから次を再生（順番待ち）
-          └ 再生 → AudioPlayer.playAAC() → 再生済みに更新
-```
-
-### 5.2 返事ログ（DB項目）
-
-| 項目 | 内容 |
+| ファイル | 変更 |
 |---|---|
-| `replyId`（一意） | Macの `reply_id` |
-| `requestId` | どの録音への返事か |
-| `kind` / `text` | 返事の種類と文字 |
-| `audioFile` | 端末に保存した音声ファイル名（音声なしは `null`） |
-| `createdAt` / `expiresAt` | Mac側の作成日時・期限 |
-| `status` | `Received` → `Playing` → `Played` / `Skipped`（期限切れ）/ `Failed` |
-| `playedAt` | 自動再生または手動再生した日時 |
+| `experimental/.../experimentalModule.kt` | DI登録を追加 |
+| `experimental/.../ring/viewmodelModule.kt` | ViewModel登録を追加 |
+| `experimental/.../ExperimentalDevices.kt` | アプリ起動時に `replyAudioService.start()` |
+| `experimental/.../ui/screens/settings/IndexSettings.kt` | 設定画面に「Reply audio」行を追加 |
 
-### 5.3 既定の動作（変更したい場合は指示してください）
+テスト：`experimental/src/commonTest/kotlin/coredevices/ring/external/replyaudio/ReplyAudioServiceTest.kt`
 
-| 項目 | 既定 |
-|---|---|
-| 再生先 | iOSの標準に従う（イヤホン・Bluetooth接続中はそちら、なければスピーカー） |
-| マナーモード中 | **鳴らす**（既存プレイヤーと同じPlaybackカテゴリ） |
-| 音楽再生中 | 音楽を一時停止して返事を流す（既存プレイヤーの動作） |
-| 電話中 | iOSが自動で中断。通話後は自動再生せず、ログに未再生として残す |
-| 連続で届いた場合 | 届いた順に1件ずつ再生 |
-| 保存期間 | 直近200件（音声ファイルも同じ件数で削除） |
-| ログに残す情報 | 返事ID・状態・時刻のみ。トークンや音声の中身はログ出力しない |
+Mac側：`tools/reply-server/reply_server.py`（Python標準ライブラリのみ）
 
-## 6. 変更しないもの
+**変更していないもの：** リング録音・BLE・文字起こし・エージェント処理・Webhook送信・`AudioPlayer`。
 
-- リングの録音・BLE転送・文字起こし・エージェント処理（`CLAUDE.md` の禁止事項）
-- Webhook送信（`IndexWebhookApi` / `IndexWebhookDeliveryQueue` 等）
-- 既存の `AudioPlayer` の実装（呼び出すだけ）
+## 5. 動かし方
 
-## 7. 作業の分け方（ブランチ運用）
+1. Macで返事サーバーを起動（`tools/reply-server/README.md`）。
+2. iPhoneアプリ：Index設定 → **Reply audio** → Server URL・Tokenを入力 → Auto-play replies をON → Save。
+3. Macから返事を登録 → iPhoneで自動再生されることを確認。
+4. エージェントの返事処理から `POST /replies`（または `push` コマンド）を呼ぶようにする。
 
-`master` から機能ごとに作業ブランチを切り、完成したら `master` にマージする。
+## 6. 実機確認の項目
 
-| 順 | 作業 | 確認方法 |
+| No | iPhoneの状態 | 確認すること |
 |---|---|---|
-| 1 | 返事のデータ型・JSON解析・再生キューの判定ロジック（重複・期限・順番） | 単体テスト |
-| 2 | 返事ログDB（Room 46）とマイグレーション | 単体テスト |
-| 3 | Mac APIクライアント＋ロングポーリング | 単体テスト（モックサーバー） |
-| 4 | 自動再生（既存 `AudioPlayer.playAAC`）＋設定シート | 実機：アプリ表示中に再生 |
-| 5 | 返事ログ画面（文字一覧・聞き直し） | 実機 |
-| 6 | 動作確認用のMac側サンプルサーバー（4章の仕様どおり、最小構成） | Mac上で起動しiPhoneから受信 |
-| 7 | 実機検証（ロック中・数分後・数十分後・連続返事など） | 8章の表 |
+| T1 | アプリ表示中 | Macから登録 → 数秒で自動再生、ログに文字 |
+| T2 | 他のアプリ表示中 | 同上 |
+| T3 | ロック中・録音直後 | リングで話す → すぐの返事が自動再生 |
+| T4 | ロック中・数分後 | 結果の返事が自動再生 |
+| T5 | ロック中・数十分後 | 同上 |
+| T6 | 返事が続けて届く | 順番に1件ずつ再生 |
+| T7 | 聞き逃した返事 | ログに●が付き、Playで再生できる |
 
-※ このクラウド環境ではiOSのビルドはできないため、ビルドと実機確認はMacのXcodeで行う。単体テストはこちらで実行する。
-
-## 8. 実機確認の項目
-
-| No | iPhoneの状態 | 返事のタイミング | 期待 |
-|---|---|---|---|
-| T1 | Pebbleアプリ表示中 | すぐ | 自動再生、ログに文字 |
-| T2 | 他のアプリ表示中 | すぐ | 自動再生 |
-| T3 | ロック中 | すぐ（1回目の返事） | 自動再生 |
-| T4 | ロック中 | 数分後（結果） | 自動再生 |
-| T5 | ロック中 | 数十分後（結果） | 自動再生 |
-| T6 | 返事が2件続けて届く | — | 順番に1件ずつ再生 |
-| T7 | 同じ返事が2回届く | — | 1回だけ再生 |
-| T8 | 期限切れの返事 | — | 再生せずログに残る |
-| T9 | 音楽再生中 / イヤホン接続中 | — | 5.3の既定どおり |
-| T10 | 通信が切れて復帰 | — | 取りこぼし・重複なし |
-| T11 | アプリを手動で終了していた | — | 次にアプリが起きた時、ログに届く |
-
-T4・T5で取りこぼしが出た場合は、ログの時刻（ポーリング停止・再開・再生）から原因を特定し、対策を別途提案する。
+うまく鳴らないケースがあった場合は、アプリのログ（`ReplyAudioService` タグの `received` / `playback start` / `playback end`）の時刻から、どの段階で止まったかを特定して対策する。

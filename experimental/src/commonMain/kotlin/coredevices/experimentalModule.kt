@@ -69,6 +69,13 @@ import coredevices.ring.external.indexwebhook.IndexWebhookDeliveryQueue
 import coredevices.ring.external.indexwebhook.IndexWebhookPreferences
 import coredevices.ring.external.indexwebhook.IndexWebhookSigningSecretStorage
 import coredevices.ring.external.indexwebhook.IndexWebhookRunRepository
+import coredevices.ring.external.replyaudio.AudioPlayerReplyAudioPlayer
+import coredevices.ring.external.replyaudio.ReplyAudioApi
+import coredevices.ring.external.replyaudio.ReplyAudioApiImpl
+import coredevices.ring.external.replyaudio.ReplyAudioLog
+import coredevices.ring.external.replyaudio.ReplyAudioPlayer
+import coredevices.ring.external.replyaudio.ReplyAudioPreferences
+import coredevices.ring.external.replyaudio.ReplyAudioService
 import coredevices.ring.agent.integrations.obsidian.ObsidianPreferences
 import coredevices.ring.firestoreModule
 import coredevices.ring.mcpModule
@@ -96,6 +103,8 @@ import coredevices.ring.service.RingHacksDelegate
 import coredevices.ring.storage.RealRecordingStorage
 import coredevices.ring.storage.RecordingStorage
 import coredevices.ring.storage.RecordingUploadSyncHandler
+import coredevices.ring.storage.getRecordingsDataDirectory
+import kotlinx.io.files.Path
 import coredevices.ring.util.trace.RingTraceSession
 import coredevices.ring.util.trace.TraceSessionExporter
 import coredevices.ring.viewmodelModule
@@ -262,6 +271,11 @@ val experimentalModule = module {
     single { RecordingBackgroundScope(CoroutineScope(Dispatchers.IO + SupervisorJob())) }
     single { RecordingProcessingQueue(get(), get(), get(), get(), get(), get(), get(), get(), get()) }
     single { IndexWebhookDeliveryQueue(get(), get(), get(), get(), get(), get(), get()) }
+    singleOf(::ReplyAudioPreferences)
+    single { ReplyAudioLog(get()) { Path(getRecordingsDataDirectory(), "replies") } }
+    single<ReplyAudioApi> { ReplyAudioApiImpl(get()) }
+    single<ReplyAudioPlayer> { AudioPlayerReplyAudioPlayer() }
+    single { ReplyAudioService(get(), get(), get(), get(), get()) }
     singleOf(::RecordingOperationFactory)
     singleOf(::RealRecordingStorage) bind RecordingStorage::class
     singleOf(::RecordingUploadSyncHandler) bind SyncHandler::class
