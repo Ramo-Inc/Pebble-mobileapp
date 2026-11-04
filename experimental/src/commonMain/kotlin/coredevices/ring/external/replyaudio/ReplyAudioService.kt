@@ -25,6 +25,8 @@ fun interface ReplyAudioPlayer {
     suspend fun play(audio: ByteArray)
 }
 
+expect fun createReplyAudioPlayer(): ReplyAudioPlayer
+
 class AudioPlayerReplyAudioPlayer : ReplyAudioPlayer {
     private val player by lazy { AudioPlayer() }
 

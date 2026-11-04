@@ -2,6 +2,7 @@ package coredevices.ring.external.replyaudio
 
 import com.russhwolf.settings.MapSettings
 import coredevices.ring.service.RecordingBackgroundScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.io.files.Path
@@ -45,11 +46,11 @@ class ReplyAudioServiceTest {
     private val log = ReplyAudioLog(settings) { audioDir }
     private val api = FakeApi()
 
-    private fun TestScope.service() = ReplyAudioService(
+    private fun TestScope.service(player: ReplyAudioPlayer = ReplyAudioPlayer { }) = ReplyAudioService(
         preferences = preferences,
         api = api,
         log = log,
-        player = { },
+        player = player,
         scope = RecordingBackgroundScope(backgroundScope),
         clock = clock,
     )
@@ -112,6 +113,17 @@ class ReplyAudioServiceTest {
 
         val reloaded = ReplyAudioLog(settings) { audioDir }
         assertTrue(reloaded.entries.value.single().played)
+    }
+
+    @Test
+    fun failedPlaybackStaysUnplayedAndDoesNotBlockTheNextReply() = runTest {
+        var calls = 0
+        api.replies = listOf(reply(2), reply(1))
+        service(player = { if (calls++ == 0) error("refused to play") }).start()
+
+        val entries = log.entries.first { entries -> entries.any { it.played } }
+        assertEquals(2, calls)
+        assertEquals(mapOf(1L to false, 2L to true), entries.associate { it.id to it.played })
     }
 }
 

@@ -69,7 +69,7 @@ import coredevices.ring.external.indexwebhook.IndexWebhookDeliveryQueue
 import coredevices.ring.external.indexwebhook.IndexWebhookPreferences
 import coredevices.ring.external.indexwebhook.IndexWebhookSigningSecretStorage
 import coredevices.ring.external.indexwebhook.IndexWebhookRunRepository
-import coredevices.ring.external.replyaudio.AudioPlayerReplyAudioPlayer
+import coredevices.ring.external.replyaudio.createReplyAudioPlayer
 import coredevices.ring.external.replyaudio.ReplyAudioApi
 import coredevices.ring.external.replyaudio.ReplyAudioApiImpl
 import coredevices.ring.external.replyaudio.ReplyAudioLog
@@ -274,7 +274,7 @@ val experimentalModule = module {
     singleOf(::ReplyAudioPreferences)
     single { ReplyAudioLog(get()) { Path(getRecordingsDataDirectory(), "replies") } }
     single<ReplyAudioApi> { ReplyAudioApiImpl(get()) }
-    single<ReplyAudioPlayer> { AudioPlayerReplyAudioPlayer() }
+    single<ReplyAudioPlayer> { createReplyAudioPlayer() }
     single { ReplyAudioService(get(), get(), get(), get(), get()) }
     singleOf(::RecordingOperationFactory)
     singleOf(::RealRecordingStorage) bind RecordingStorage::class
