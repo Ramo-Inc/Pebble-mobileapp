@@ -33,7 +33,7 @@ open(p, "w").write(json.dumps(d, indent=2, ensure_ascii=False) + "\n")
 EOF
       echo "Registered session_mail for Claude Code in $WORKDIR only."
     fi
-    exec claude --dangerously-load-development-channels server:session_mail "$PROMPT"
+    exec claude "$PROMPT" --dangerously-load-development-channels server:session_mail
     ;;
   codex)
     cd "$WORKDIR"
