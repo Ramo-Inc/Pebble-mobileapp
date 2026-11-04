@@ -13,6 +13,7 @@ import kotlinx.cinterop.value
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import platform.AVFAudio.AVAudioPlayer
 import platform.AVFAudio.AVAudioPlayerDelegateProtocol
 import platform.AVFAudio.AVAudioSession
@@ -26,6 +27,7 @@ import platform.Foundation.create
 import platform.darwin.NSObject
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.time.Duration.Companion.seconds
 
 actual fun createReplyAudioPlayer(): ReplyAudioPlayer = SessionReplyAudioPlayer()
 
@@ -35,6 +37,8 @@ actual fun createReplyAudioPlayer(): ReplyAudioPlayer = SessionReplyAudioPlayer(
  */
 @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
 private class SessionReplyAudioPlayer : ReplyAudioPlayer {
+    // AVAudioPlayer holds its delegate weakly; keep both alive until playback ends.
+    private var active: Pair<AVAudioPlayer, FinishDelegate>? = null
 
     override suspend fun play(audio: ByteArray) = withContext(Dispatchers.Main) {
         require(audio.isNotEmpty()) { "empty audio" }
@@ -49,19 +53,27 @@ private class SessionReplyAudioPlayer : ReplyAudioPlayer {
             }
             val delegate = FinishDelegate()
             player.delegate = delegate
-            suspendCancellableCoroutine { cont ->
-                delegate.onFinish = { ok ->
-                    if (cont.isActive) {
-                        if (ok) cont.resume(Unit) else cont.resumeWithException(IllegalStateException("playback did not finish"))
+            active = player to delegate
+            // The finish callback is not guaranteed, so never hold the queue longer than the clip.
+            withTimeoutOrNull(player.duration.seconds + FINISH_GRACE) {
+                suspendCancellableCoroutine { cont ->
+                    delegate.onFinish = { ok ->
+                        if (cont.isActive) {
+                            if (ok) cont.resume(Unit) else cont.resumeWithException(IllegalStateException("playback did not finish"))
+                        }
                     }
+                    cont.invokeOnCancellation { player.stop() }
+                    if (!player.play()) cont.resumeWithException(IllegalStateException("AVAudioPlayer refused to play"))
                 }
-                cont.invokeOnCancellation { player.stop() }
-                if (!player.play()) cont.resumeWithException(IllegalStateException("AVAudioPlayer refused to play"))
-            }
-            player.delegate = null
+            } ?: player.stop()
         } finally {
+            active = null
             session.setActive(false, AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation, null)
         }
+    }
+
+    private companion object {
+        val FINISH_GRACE = 5.seconds
     }
 
     private fun call(what: String, block: (CPointer<ObjCObjectVar<NSError?>>) -> Boolean) = memScoped {
