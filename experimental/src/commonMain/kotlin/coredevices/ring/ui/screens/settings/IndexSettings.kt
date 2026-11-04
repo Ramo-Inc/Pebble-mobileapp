@@ -497,7 +497,7 @@ fun IndexSettings(coreNav: CoreNav) {
             item {
                 SettingsRow(
                     title = "Reply audio",
-                    subtitle = "Auto-play agent replies and view the reply log",
+                    subtitle = "Auto-play agent replies",
                     onClick = { showReplyAudioDialog = true },
                 )
             }

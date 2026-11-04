@@ -40,6 +40,8 @@ object ReplyAudioRules {
     /** Replies older than this when received are logged but not auto-played, e.g. a backlog after a long outage. */
     val AUTO_PLAY_MAX_AGE: Duration = 15.minutes
 
+    const val FEED_PREVIEW_COUNT = 5
+
     /** Replies after [cursor], each id once, oldest first. */
     fun newReplies(incoming: List<ReplyDto>, cursor: Long?): List<ReplyDto> =
         incoming
@@ -49,6 +51,9 @@ object ReplyAudioRules {
 
     fun shouldAutoPlay(entry: ReplyLogEntry, now: Instant): Boolean =
         entry.hasAudio && !entry.played && now - entry.createdAt <= AUTO_PLAY_MAX_AGE
+
+    fun feedPreview(log: List<ReplyLogEntry>, expanded: Boolean): List<ReplyLogEntry> =
+        if (expanded) log else log.take(FEED_PREVIEW_COUNT)
 
     /** Newest first, capped at [max]. Returns the kept log and the ids that fell off the end. */
     fun prepend(log: List<ReplyLogEntry>, entry: ReplyLogEntry, max: Int): Pair<List<ReplyLogEntry>, List<Long>> {

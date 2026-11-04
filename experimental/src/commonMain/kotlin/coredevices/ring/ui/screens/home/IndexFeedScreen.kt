@@ -59,6 +59,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -83,6 +84,7 @@ import coredevices.ring.service.indexfeed.DefaultListsBootstrap.Companion.LIST_T
 import coredevices.ring.ui.components.chat.IndexComposeBarHost
 import coredevices.ring.ui.navigation.RingRoutes
 import coredevices.ring.ui.theme.IndexTheme
+import coredevices.ring.external.replyaudio.ReplyAudioViewModel
 import coredevices.ring.ui.viewmodel.IndexFeedViewModel
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
@@ -107,6 +109,9 @@ fun IndexFeedScreen(
 ) {
     val vm = koinViewModel<IndexFeedViewModel>()
     val state by vm.state.collectAsStateWithLifecycle()
+    val replyVm = koinViewModel<ReplyAudioViewModel>()
+    val replies by replyVm.entries.collectAsStateWithLifecycle()
+    var repliesExpanded by rememberSaveable { mutableStateOf(false) }
     val query by vm.query.collectAsState()
     var searching by remember { mutableStateOf(false) }
     LaunchedEffect(searching) { if (!searching) vm.clearQuery() }
@@ -198,6 +203,15 @@ fun IndexFeedScreen(
                         onRetryRecording = { rec, entry -> vm.retryRecording(rec.id, entry) },
                     )
                 }
+            }
+
+            if (!state.searching && replies.isNotEmpty()) {
+                repliesSection(
+                    entries = replies,
+                    expanded = repliesExpanded,
+                    onToggleExpanded = { repliesExpanded = !repliesExpanded },
+                    onPlay = { replyVm.replay(it.id) },
+                )
             }
 
             if (state.todosPreview.isNotEmpty() || (!state.searching && state.totalTodos == 0)) {

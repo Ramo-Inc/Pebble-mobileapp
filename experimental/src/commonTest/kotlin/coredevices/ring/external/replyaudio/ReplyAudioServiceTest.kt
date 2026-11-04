@@ -131,8 +131,8 @@ class ReplyAudioRulesTest {
 
     private val now = Instant.fromEpochMilliseconds(1_800_000_000_000)
 
-    private fun entry(createdAt: Instant, hasAudio: Boolean = true, played: Boolean = false) = ReplyLogEntry(
-        id = 1,
+    private fun entry(createdAt: Instant, hasAudio: Boolean = true, played: Boolean = false, id: Long = 1) = ReplyLogEntry(
+        id = id,
         text = "t",
         createdAtMs = createdAt.toEpochMilliseconds(),
         receivedAtMs = now.toEpochMilliseconds(),
@@ -161,5 +161,14 @@ class ReplyAudioRulesTest {
     fun textOnlyOrPlayedReplyIsNotAutoPlayed() {
         assertFalse(ReplyAudioRules.shouldAutoPlay(entry(now, hasAudio = false), now))
         assertFalse(ReplyAudioRules.shouldAutoPlay(entry(now, played = true), now))
+    }
+
+    @Test
+    fun feedPreviewShowsNewestFewUntilExpanded() {
+        val log = (12L downTo 1L).map { entry(now, id = it) }
+
+        assertEquals(listOf(12L, 11L, 10L, 9L, 8L), ReplyAudioRules.feedPreview(log, expanded = false).map { it.id })
+        assertEquals(log, ReplyAudioRules.feedPreview(log, expanded = true))
+        assertEquals(log.take(2), ReplyAudioRules.feedPreview(log.take(2), expanded = false))
     }
 }
