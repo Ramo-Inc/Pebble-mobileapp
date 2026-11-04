@@ -155,3 +155,17 @@ When asked to make a release build and install it on a local device, follow the 
 
 Release builds are minified. If a release-only crash appears in Haversine/native BLE code, check R8 keep rules before changing app logic. In particular, the Haversine native library resolves `com.wtlp.haversinesatellitelibrary.logging.HaversineLog` by exact JVM class name, so the app proguard rules must keep that class.
 
+
+## Agent skills
+
+### Issue tracker
+
+Specs and tickets live as local markdown files under `.scratch/<feature>/`, committed to git. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default triage roles, recorded as `Status:` lines in ticket files. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root, created only when needed. See `docs/agents/domain.md`.
