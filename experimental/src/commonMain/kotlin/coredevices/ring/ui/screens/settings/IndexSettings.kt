@@ -69,6 +69,7 @@ import coredevices.ring.agent.integrations.providers.IntegrationProviderReposito
 import coredevices.ring.agent.integrations.providers.LegacyDestination
 import coredevices.ring.data.NoteShortcutType
 import coredevices.ring.external.indexwebhook.IndexWebhookSettingsViewModel
+import coredevices.ring.external.replyaudio.ReplyAudioDialog
 import coredevices.ring.ui.PreviewWrapper
 import coredevices.ring.ui.components.SectionHeader
 import coredevices.ring.ui.navigation.RingRoutes
@@ -195,6 +196,7 @@ fun IndexSettings(coreNav: CoreNav) {
     var showSignInDialog by remember { mutableStateOf(false) }
     var showBackupDialog by remember { mutableStateOf(false) }
     var showDiagnosticsDialog by remember { mutableStateOf(false) }
+    var showReplyAudioDialog by remember { mutableStateOf(false) }
     val availableNoteProviders by viewModel.availableNoteProviders.collectAsState()
     val availableReminderProviders by viewModel.availableReminderProviders.collectAsState()
     val legacyDestinations by viewModel.legacyDestinations.collectAsState()
@@ -205,6 +207,9 @@ fun IndexSettings(coreNav: CoreNav) {
         SignInDialog(onDismiss = { showSignInDialog = false })
     }
     IndexWebhookSheetHost()
+    if (showReplyAudioDialog) {
+        ReplyAudioDialog(onDismiss = { showReplyAudioDialog = false })
+    }
     if (showNoteShortcutDialog) {
         val shortcut = viewModel.noteShortcut.collectAsState()
         NoteShortcutDialog(
@@ -487,6 +492,13 @@ fun IndexSettings(coreNav: CoreNav) {
                             ?.let { webhookViewModel.openDialog(it) }
                             ?: webhookViewModel.openDialog()
                     },
+                )
+            }
+            item {
+                SettingsRow(
+                    title = "Reply audio",
+                    subtitle = "Auto-play agent replies and view the reply log",
+                    onClick = { showReplyAudioDialog = true },
                 )
             }
             item {
