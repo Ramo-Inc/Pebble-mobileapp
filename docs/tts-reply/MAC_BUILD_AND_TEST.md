@@ -1,7 +1,7 @@
 # 作業指示書：Mac miniでビルドしてiPhone実機でテストする（Reply audio MVP）
 
 - 対象リポジトリ：https://github.com/Ramo-Inc/Pebble-mobileapp
-- 対象ブランチ：`feature/tts-reply-playback`
+- 対象ブランチ：`master`
 - 設計書：`docs/tts-reply/DESIGN.md`
 - この手順は、人がそのまま実行しても、Mac mini上のAIエージェント（Claude Code等）に渡しても使える。
 
@@ -37,13 +37,12 @@
 ```bash
 git clone https://github.com/Ramo-Inc/Pebble-mobileapp.git
 cd Pebble-mobileapp
-git checkout feature/tts-reply-playback
 ```
 
 2回目以降：
 
 ```bash
-git fetch origin && git checkout feature/tts-reply-playback && git pull
+git checkout master && git pull
 ```
 
 ## 3. 準備スクリプトを実行する
@@ -179,23 +178,9 @@ T8:
 ■ 気づいたこと
 ```
 
-## 9. 合格したら（masterへの取り込み）
+## 9. 修正が必要になったら
 
-T1〜T3とT7が合格したら、MVPとして `master` に取り込む。
-
-```bash
-git checkout master && git pull
-```
-
-```bash
-git merge --no-ff feature/tts-reply-playback
-```
-
-```bash
-git push origin master
-```
-
-T4・T5が不合格でも、取り込みはしてよい。結果は報告し、次の対策を別ブランチで行う。
+Reply audioのコードは `master` に取り込み済み。修正は `master` から作業ブランチを切って行い、確認できたら `master` にマージする。
 
 ## 10. よくあるエラー
 
