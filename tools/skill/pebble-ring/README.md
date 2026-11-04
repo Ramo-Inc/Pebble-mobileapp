@@ -67,11 +67,11 @@ launchctl bootout gui/$(id -u)/com.ramo.pebble-ring                             
 
 ## 秘書の用意
 
-秘書にする Claude Code / Codex のセッションに Catchball の MCP を登録し（`~/Services/Catchball/README.md`）、次のように頼む。
+秘書にする Claude Code / Codex のセッションに Catchball の MCP を登録し（`~/Services/Catchball/README.md`）、秘書に次のように頼む。
 
-> キャッチボールのルーム voice に、統括として参加して。ID は main、表示名は「秘書」、役割は「ユーザーとの窓口（pebble-ring 経由）、仕事の振り分け、進捗管理」。
+> ~/Projects/Pebble-mobileapp/tools/skill/pebble-ring/SECRETARY.md を読んで、その手順どおりに接続して。
 
-参加すると pebble-ring から説明が届く。秘書は、ユーザーへの返事を `pebble-ring` 宛てに送る。
+[SECRETARY.md](SECRETARY.md) が秘書向けの説明書（Catchball とは何か、参加の引数、pebble-ring を通したユーザーとのやり取り）。参加すると pebble-ring からも説明が届く。
 
 ## テスト
 
