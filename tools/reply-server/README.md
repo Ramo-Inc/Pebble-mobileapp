@@ -1,12 +1,15 @@
 # 返事サーバー（Reply server）
 
-Pebble アプリの **Reply audio** 機能で使う、Mac 側の小さなサーバー。エージェントや TTS が返事（文字＋音声）を登録し、iPhone アプリが3秒ごとに取りに来て自動再生する。
+Pebble アプリの **Reply audio** 機能で使う、Mac 側の小さなサーバー。
+
+- **返事**：エージェントや TTS が返事（文字＋音声）を登録し、iPhone アプリが3秒ごとに取りに来て自動再生する。
+- **文字起こしの転送**：iPhone アプリの Webhook を受け取り、文字起こしを JSON で指定のサーバー（`RELAY_URL`）へ転送する。
 
 | 資料 | 内容 |
 |---|---|
 | この README | インストール・起動・iPhone の設定・困ったとき |
-| [API.md](API.md) | HTTP API 仕様（`GET` / `POST /replies`） |
-| [SENDER_SPEC.md](SENDER_SPEC.md) | 返事を送り出す側（エージェント／TTS）の仕様 |
+| [API.md](API.md) | HTTP API 仕様（`GET` / `POST /replies`、`POST /webhook`） |
+| [SENDER_SPEC.md](SENDER_SPEC.md) | エージェント／TTS 側の仕様（文字起こしの受け取り・返事の送り方） |
 | `docs/tts-reply/DESIGN.md` | 機能全体の設計 |
 
 ## 1. 必要なもの
@@ -31,20 +34,46 @@ cd Pebble-mobileapp
 
 使うファイルは `tools/reply-server/reply_server.py` の1つだけ。別の場所で使う場合は、このファイルだけコピーすればよい。
 
-## 3. 起動
+## 3. 設定（.env）
+
+見本をコピーして、値を書き換える。`.env` は git に入らない。
 
 ```bash
-python3 tools/reply-server/reply_server.py serve --token <トークン> --port 8765
+cp tools/reply-server/.env.example tools/reply-server/.env
+```
+
+```
+REPLY_TOKEN=<iPhone アプリと共有するトークン>
+RELAY_URL=http://127.0.0.1:9000/stt     # 文字起こしの転送先。空なら転送しない
+RELAY_TOKEN=<転送先が発行したトークン>    # Authorization: Bearer で付けて送る
+```
+
+起動時に自動で読み込む。シェルの環境変数や起動オプションで同じ値を渡したときは、そちらが優先。
+
+## 4. 起動
+
+```bash
+python3 tools/reply-server/reply_server.py serve
 ```
 
 | オプション | 初期値 | 内容 |
 |---|---|---|
-| `--token` | 環境変数 `REPLY_TOKEN` | 認証用の文字列。推測されにくいものにする。空だと認証なし |
+| `--token` | `.env` の `REPLY_TOKEN` | 認証用の文字列。推測されにくいものにする。空だと認証なし |
+| `--relay-url` | `.env` の `RELAY_URL` | 文字起こしの転送先。空なら転送しない |
+| `--relay-token` | `.env` の `RELAY_TOKEN` | 転送先に送るトークン |
 | `--port` | `8765` | 待ち受けるポート |
 | `--host` | `0.0.0.0` | 待ち受けるアドレス。`127.0.0.1` にすると Mac の中からしか使えない |
 | `--store` | `tools/reply-server/replies.jsonl` | 返事の保存ファイル（gitには入らない） |
 
-起動すると `Reply server on http://0.0.0.0:8765 (store: ...)` と出る。返事が登録されるたびに `[reply 12] 結果です…` と出る（3秒ごとの取得は表示しない）。
+起動すると次のように出る。
+
+```
+Reply server on http://0.0.0.0:8765 (store: ...)
+Webhook relay: http://127.0.0.1:9000/stt
+```
+
+- 返事が登録されるたびに `[reply 12] 結果です…`（3秒ごとの取得は表示しない）
+- Webhook を受け取るたびに `[webhook <id>] <文字起こし>`、転送できたら `[relay <id>] delivered`
 
 止めるときは `Ctrl+C`。
 
@@ -62,7 +91,7 @@ curl -s -H "Authorization: Bearer <トークン>" "http://<アドレス>:8765/re
 # => {"replies": [...]}
 ```
 
-## 4. iPhone アプリの設定
+## 5. iPhone アプリの設定（Reply audio）
 
 Index タブ → 右上の歯車 → **Reply audio**：
 
@@ -74,7 +103,22 @@ Index タブ → 右上の歯車 → **Reply audio**：
 
 ロック中や他のアプリを表示中も鳴らすには、リング（Index 01）をペアリングしておく。
 
-## 5. 返事を送る
+## 6. iPhone アプリの設定（Webhook → 文字起こしの転送）
+
+Index 設定 → **Webhook** → ジェスチャー（Hold & talk など）を選ぶ：
+
+- **URL**：`http://<Macのアドレス>:8765/webhook`
+- **Headers**：名前 `Authorization`、値 `Bearer <REPLY_TOKEN の値>`
+- **送る内容**：Transcription only（または Both。音声は転送しない）
+- **Save**
+
+録音すると、文字起こしが `RELAY_URL` に転送される。転送の形式は [SENDER_SPEC.md](SENDER_SPEC.md)。
+
+- iPhone にはすぐ `200` を返し、転送は裏で行う。失敗したら 5秒・15秒・30秒あけて3回までやり直し、だめなら捨ててログに残す（待っている分はサーバーを止めると消える）。
+- 同じ録音（`X-Index-Delivery` が同じ）は1回しか転送しない。
+- 「Send test event」のテスト送信とボタン操作（クリック）は転送しない。
+
+## 7. 返事を送る
 
 ```bash
 # macOS の say で音声を作って送る（動作確認用）
@@ -89,7 +133,7 @@ python3 tools/reply-server/reply_server.py push --token <トークン> --text ".
 
 `--server`（初期値 `http://127.0.0.1:8765`）で送り先を変えられる。プログラムから送る方法は [SENDER_SPEC.md](SENDER_SPEC.md)。
 
-## 6. 困ったとき
+## 8. 困ったとき
 
 | 症状 | 原因と対処 |
 |---|---|
@@ -99,3 +143,4 @@ python3 tools/reply-server/reply_server.py push --token <トークン> --text ".
 | 届いたが鳴らない | 作成から15分以上たっていた、音声なしで送った、または音声ファイルが壊れている。アプリのログで `ReplyAudio` を検索し、`received` / `playback start` / `playback end` / `playback failed` を確認 |
 | ロック中・他アプリ表示中に鳴らない | リングがペアリングされているか確認 |
 | ポートが使用中で起動しない | `--port` で別の番号にし、アプリの Server URL も合わせる |
+| 文字起こしが転送されない | 起動時の `Webhook relay:` が `off` なら `.env` の `RELAY_URL` を確認。アプリの Webhook の Recent runs が失敗なら URL・`Authorization` ヘッダーを確認。サーバーのログに `dropped` があれば転送先の状態を確認 |

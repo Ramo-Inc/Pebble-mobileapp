@@ -1,2 +1,4 @@
 replies.jsonl
 replies.jsonl.tmp
+.env
+__pycache__/

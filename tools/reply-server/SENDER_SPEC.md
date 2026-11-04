@@ -1,24 +1,75 @@
-# 送り出す側（エージェント／TTS）の仕様
+# エージェント／TTS 側の仕様
 
 - 作成日：2026-11-05
-- 対象：エージェント／TTS など、iPhone に返事（文字＋音声）を届けたいプログラム
+- 対象：リングの文字起こしを受け取り、iPhone に返事（文字＋音声）を届けたいプログラム（エージェント／TTS）
 - 前提：返事サーバーが Mac で動いていること（起動方法は [README.md](README.md)、API の全体は [API.md](API.md)）
 
 ## 1. 全体の流れ
 
 ```text
-送り出す側（エージェント / TTS）
-   │  POST /replies  （文字 + 音声のbase64）
-   ▼
-返事サーバー（Mac, reply_server.py）  … 番号(id)と作成時刻を付けて保存（直近200件）
-   ▲
-   │  GET /replies?after=<最後のid>  … 3秒ごと
-iPhone アプリ  … 新しい返事を id の小さい順に1件ずつ自動再生し、返事ログに残す
+リング → iPhone アプリ ──Webhook──▶ 返事サーバー（Mac）──① 文字起こし(JSON)──▶ エージェント / TTS
+                                        ▲                                      │
+                                        └────────── ② POST /replies ───────────┘
+iPhone アプリ ◀── GET /replies?after=<最後のid>（3秒ごと）── 返事サーバー
+              … 新しい返事を id の小さい順に1件ずつ自動再生し、返事ログに残す
 ```
 
-送り出す側がやることは **`POST /replies` を1回呼ぶことだけ**。iPhone との通信、順番、再生はサーバーとアプリが行う。
+エージェント側がやることは2つだけ。
 
-## 2. 返事の登録 `POST /replies`
+1. **① 文字起こしを受け取る**：返事サーバーから届く JSON を受け取る（2章）。
+2. **② 返事を送る**：`POST /replies` を1回呼ぶ（3章）。iPhone との通信、順番、再生はサーバーとアプリが行う。
+
+## 2. 文字起こしを受け取る（転送）
+
+返事サーバーの `.env` に、エージェントの受け口を `RELAY_URL`、エージェントが発行したトークンを `RELAY_TOKEN` として書く（[README.md](README.md) の3章）。録音のたびに、次のリクエストが届く。
+
+```
+POST <RELAY_URL>
+Content-Type: application/json
+Authorization: Bearer <RELAY_TOKEN>
+
+{"text": "牛乳を買うリマインダー", "request_id": "d2b7c1e0-...", "recorded_at": 1793786333807, "trigger": "single-click-hold"}
+```
+
+| フィールド | 型 | 内容 |
+|---|---|---|
+| `text` | 文字列 | 文字起こし（空のものは届かない） |
+| `request_id` | 文字列 / `null` | 録音ごとのID（Webhook の `X-Index-Delivery`）。**返事を送るときに `request_id` にそのまま入れる** |
+| `recorded_at` | 整数 / `null` | 録音した時刻。Unix時刻（ミリ秒） |
+| `trigger` | 文字列 / `null` | 録音を始めた操作（`single-click-hold` / `double-click-hold`） |
+
+受け口の作り方：
+
+- **すぐに 2xx を返す。** 処理（AI・TTS）は返したあとで行う。10秒以内に返さないとタイムアウトとして扱われる。
+- `Authorization` のトークンを確認し、違えば `401` を返す（`401` などの 4xx はやり直されない）。
+- 一時的に受けられないときは `503` などの 5xx を返す。5秒・15秒・30秒あけて最大3回届き直す。それでもだめなら捨てられる。
+- 同じ録音が2回届くことは基本的にないが、念のため `request_id` で重複を捨てると安全。
+- テスト送信・ボタン操作・文字起こしのない録音は届かない。
+
+受け口の例（Python 標準ライブラリのみ）：
+
+```python
+import json, os, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+TOKEN = os.environ["AGENT_TOKEN"]  # 返事サーバーの RELAY_TOKEN と同じ値
+
+def handle(stt):
+    # ここで AI・TTS を動かし、できた返事を POST /replies する（7章の send_reply）
+    print(stt["request_id"], stt["text"])
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.headers.get("Authorization") != f"Bearer {TOKEN}":
+            self.send_response(401); self.end_headers(); return
+        stt = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.send_response(200); self.end_headers()
+        threading.Thread(target=handle, args=(stt,), daemon=True).start()
+
+ThreadingHTTPServer(("127.0.0.1", 9000), Handler).serve_forever()
+```
+
+## 3. 返事の登録 `POST /replies`
 
 ### リクエスト
 
@@ -59,7 +110,7 @@ Content-Type: application/json
 
 再送の扱い：同じ内容を2回 POST すると、**別の返事として2件**登録され、2回鳴る。サーバー側に重複排除はない。タイムアウト等で再送するときは注意する。
 
-## 3. 音声の決まり
+## 4. 音声の決まり
 
 | 項目 | 決まり |
 |---|---|
@@ -70,7 +121,7 @@ Content-Type: application/json
 
 サーバーは音声の中身を検査しない。壊れた音声は、iPhone 側で再生に失敗し、返事ログに文字だけが残る（未再生のまま）。
 
-## 4. iPhone 側の動き（送り出す側が知っておくこと）
+## 5. iPhone 側の動き（送り出す側が知っておくこと）
 
 | 項目 | 動き |
 |---|---|
@@ -82,14 +133,14 @@ Content-Type: application/json
 | 音声なしの返事 | 文字だけログに残る。音は鳴らない |
 | 保存件数 | サーバー・アプリとも直近200件 |
 
-## 5. 注意点（壊さないために）
+## 6. 注意点（壊さないために）
 
 - **`replies.jsonl` を消さない。** サーバーは保存ファイルの最後の `id` の続きから番号を付ける。ファイルを消すと番号が1から振り直しになる。iPhone は「最後に受け取った番号より大きいもの」しか取りに行かないため、**新しい返事が届かなくなる**。直し方は [README.md](README.md) の「困ったとき」。
 - **サーバーは1台だけ使う。** 複数のサーバーに分けて送ると番号が混ざる。
 - **時計を合わせておく。** 自動再生の15分の判定は、サーバー（Mac）の時刻と iPhone の時刻の差で行う。Mac の時計が大きくずれていると鳴らない。
 - **通信は暗号化されていない（MVP）。** 同じWi-Fi・Tailscale など、信頼できるネットワークの中だけで使う。トークンは推測されにくい文字列にする。
 
-## 6. 呼び出し例
+## 7. 呼び出し例
 
 ### curl
 

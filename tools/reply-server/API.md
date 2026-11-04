@@ -1,7 +1,7 @@
 # 返事サーバー API 仕様書
 
 - 対象：`tools/reply-server/reply_server.py`
-- 利用者：iPhone アプリ（取得側）、エージェント／TTS（登録側。詳しくは [SENDER_SPEC.md](SENDER_SPEC.md)）
+- 利用者：iPhone アプリ（取得側・Webhook 送信側）、エージェント／TTS（登録側・転送の受け取り側。詳しくは [SENDER_SPEC.md](SENDER_SPEC.md)）
 
 ## 1. 共通
 
@@ -11,7 +11,7 @@
 | 形式 | JSON（UTF-8）。レスポンスは `Content-Type: application/json; charset=utf-8` |
 | 認証 | `Authorization: Bearer <トークン>`。サーバーを `--token` 付きで起動したときだけ必須。トークンなしで起動した場合は認証なし |
 | 通信 | HTTP（暗号化なし）。信頼できるネットワーク（同じLAN・Tailscale）の中で使う |
-| パス | `/replies` のみ。それ以外は `404` |
+| パス | `/replies` と `/webhook`。それ以外は `404` |
 
 ## 2. 返事のデータ
 
@@ -79,14 +79,62 @@ Authorization: Bearer <トークン>
 | `400` | `{"error": "bad after"}` | `after` が整数でない |
 | `401` | `{"error": "unauthorized"}` | トークンが違う、またはない |
 
-## 5. 保存
+## 5. `POST /webhook` — iPhone の Webhook を受け取り、文字起こしを転送する
+
+iPhone アプリの Index Webhook（`experimental/.../indexwebhook/INDEX_WEBHOOK_API.md`、バージョン1）をそのまま受け取る。
+
+リクエスト（アプリが送るもの）：
+
+```
+POST /webhook
+Authorization: Bearer <トークン>          … アプリの Webhook 設定の Headers に追加する
+Content-Type: multipart/form-data; boundary=...
+X-Index-Delivery: <録音ごとのID>
+X-Index-Trigger: single-click-hold | double-click-hold
+X-Index-Test: true                       … テスト送信のときだけ
+```
+
+使うフィールドは `transcription`（文字起こし）と `recordedAt`。`audio` は使わない。
+
+レスポンス（すべて受け取った時点で返す。転送の結果は待たない）：
+
+| ステータス | ボディ | 意味 |
+|---|---|---|
+| `200` | `{"status": "queued"}` | 転送の順番待ちに入れた |
+| `200` | `{"status": "duplicate"}` | 同じ `X-Index-Delivery` をすでに受け取っている（アプリの再送）。転送しない |
+| `200` | `{"status": "ignored test event"}` | テスト送信。転送しない |
+| `200` | `{"status": "no transcription"}` | 文字起こしがない（録音だけの設定、ボタン操作のJSON）。転送しない |
+| `200` | `{"status": "relay disabled"}` | `RELAY_URL` が未設定。転送しない |
+| `401` | `{"error": "unauthorized"}` | トークンが違う、またはない |
+| `413` | `{"error": "too large"}` | ボディが10MBを超えた |
+
+転送（返事サーバー → `RELAY_URL`）：
+
+```
+POST <RELAY_URL>
+Content-Type: application/json
+Authorization: Bearer <RELAY_TOKEN>      … RELAY_TOKEN が空なら付けない
+
+{"text": "牛乳を買うリマインダー", "request_id": "<X-Index-Delivery>", "recorded_at": 1793786333807, "trigger": "single-click-hold"}
+```
+
+| 項目 | 決まり |
+|---|---|
+| 順番 | 受け取った順に1件ずつ |
+| 成功 | 転送先が 2xx を返したとき |
+| やり直し | 接続エラー・タイムアウト（10秒）・408・429・5xx のとき、5秒・15秒・30秒あけて最大3回 |
+| あきらめる | 3回やり直してもだめなとき、またはそれ以外の 4xx のとき。ログに `dropped` と出して捨てる |
+| 保存 | しない（メモリだけ）。サーバーを止めると、順番待ちの分は消える |
+| 重複 | 直近1000件の `X-Index-Delivery` を覚えて、同じものは転送しない |
+
+## 6. 保存
 
 - 返事は `replies.jsonl`（1行に1件のJSON）に保存し、**直近200件**だけ残す。
 - 書き込みは一時ファイル経由で置き換えるので、途中で止まってもファイルは壊れない。
 - サーバーを再起動しても、番号は保存ファイルの続きから振られる。
 - **保存ファイルを消すと番号が1からになり、iPhone に新しい返事が届かなくなる**。直し方は [README.md](README.md) の「困ったとき」を参照。
 
-## 6. iPhone アプリ側の決まり（参考）
+## 7. iPhone アプリ側の決まり（参考）
 
 | 項目 | 決まり |
 |---|---|

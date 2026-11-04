@@ -2,9 +2,10 @@
 """Minimal reply server for the Pebble app's "Reply audio" feature.
 
 The agent pushes replies (text + optional audio); the iPhone polls GET /replies and auto-plays them.
-Standard library only.
+Optionally receives the app's Index webhook at POST /webhook and relays the transcription as JSON
+to RELAY_URL. Settings are read from .env next to this file. Standard library only.
 
-  Run the server:   python3 reply_server.py serve --token SECRET [--port 8765]
+  Run the server:   python3 reply_server.py serve [--token SECRET] [--port 8765]
   Push a reply:     python3 reply_server.py push --token SECRET --text "了解" [--audio reply.m4a | --say]
                                               [--request-id <X-Index-Delivery>]
 """
@@ -13,17 +14,123 @@ import base64
 import hmac
 import json
 import os
+import queue
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
+from collections import OrderedDict
+from email.parser import BytesParser
+from email.policy import HTTP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 MAX_REPLIES = 200
 MAX_AUDIO_BYTES = 5 * 1024 * 1024
+MAX_BODY_BYTES = MAX_AUDIO_BYTES * 2
+ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+RELAY_RETRY_DELAYS = (5, 15, 30)
+RELAY_TIMEOUT = 10
+RELAY_DEDUP_SIZE = 1000
+
+
+def load_env(path):
+    """Reads KEY=VALUE lines into os.environ without overriding variables that are already set."""
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
+def parse_multipart(content_type, body):
+    """Returns the text fields of a multipart/form-data body as {name: value}."""
+    message = BytesParser(policy=HTTP).parsebytes(
+        f"Content-Type: {content_type}\r\n\r\n".encode("latin-1") + body
+    )
+    fields = {}
+    for part in message.iter_parts():
+        name = part.get_param("name", header="content-disposition")
+        if name and part.get_filename() is None:
+            fields[name] = part.get_payload(decode=True).decode("utf-8")
+    return fields
+
+
+class RelayError(Exception):
+    def __init__(self, message, retryable):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def post_json(url, token, payload):
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(
+        url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers=headers, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=RELAY_TIMEOUT):
+            pass
+    except urllib.error.HTTPError as e:
+        raise RelayError(f"HTTP {e.code}", retryable=e.code in (408, 429) or e.code >= 500)
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+        raise RelayError(str(getattr(e, "reason", e)), retryable=True)
+
+
+class Relay:
+    """Forwards transcriptions to the relay URL one at a time, in arrival order, in memory only."""
+
+    def __init__(self, url, token, send=post_json, sleep=time.sleep, retry_delays=RELAY_RETRY_DELAYS):
+        self.url = url
+        self.token = token
+        self.send = send
+        self.sleep = sleep
+        self.retry_delays = retry_delays
+        self.queue = queue.Queue()
+        self.seen = OrderedDict()
+        self.lock = threading.Lock()
+
+    def start(self):
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def enqueue(self, payload):
+        """Returns False when this delivery was already accepted (the app re-sent it)."""
+        delivery = payload.get("request_id")
+        with self.lock:
+            if delivery:
+                if delivery in self.seen:
+                    return False
+                self.seen[delivery] = True
+                if len(self.seen) > RELAY_DEDUP_SIZE:
+                    self.seen.popitem(last=False)
+        self.queue.put(payload)
+        return True
+
+    def _run(self):
+        while True:
+            self.deliver(self.queue.get())
+
+    def deliver(self, payload):
+        label = payload.get("request_id") or "-"
+        for attempt in range(len(self.retry_delays) + 1):
+            try:
+                self.send(self.url, self.token, payload)
+                print(f"[relay {label}] delivered", flush=True)
+                return True
+            except RelayError as e:
+                if not e.retryable or attempt == len(self.retry_delays):
+                    print(f"[relay {label}] dropped after {attempt + 1} attempt(s): {e}", flush=True)
+                    return False
+                print(f"[relay {label}] attempt {attempt + 1} failed: {e}", flush=True)
+                self.sleep(self.retry_delays[attempt])
 
 
 class ReplyStore:
@@ -58,7 +165,7 @@ class ReplyStore:
             return [r for r in self.replies if cursor is None or r["id"] > cursor]
 
 
-def make_handler(store, token):
+def make_handler(store, token, relay=None):
     class Handler(BaseHTTPRequestHandler):
         def _authorized(self):
             if not token:
@@ -88,13 +195,16 @@ def make_handler(store, token):
             self._send(200, {"replies": store.after(cursor)})
 
         def do_POST(self):
-            if urlparse(self.path).path != "/replies":
+            path = urlparse(self.path).path
+            if path not in ("/replies", "/webhook"):
                 return self._send(404, {"error": "not found"})
             if not self._authorized():
                 return self._send(401, {"error": "unauthorized"})
             length = int(self.headers.get("Content-Length", "0"))
-            if length > MAX_AUDIO_BYTES * 2:
+            if length > MAX_BODY_BYTES:
                 return self._send(413, {"error": "too large"})
+            if path == "/webhook":
+                return self._webhook(self.rfile.read(length))
             try:
                 body = json.loads(self.rfile.read(length) or b"{}")
             except json.JSONDecodeError:
@@ -106,6 +216,29 @@ def make_handler(store, token):
             reply = store.add(text, body.get("request_id"), audio)
             print(f"[reply {reply['id']}] {text[:60]}", flush=True)
             self._send(201, {"id": reply["id"]})
+
+        def _webhook(self, body):
+            if self.headers.get("X-Index-Test") == "true":
+                return self._send(200, {"status": "ignored test event"})
+            content_type = self.headers.get("Content-Type", "")
+            # Button events arrive as JSON and carry no transcription.
+            fields = parse_multipart(content_type, body) if content_type.startswith("multipart/") else {}
+            text = fields.get("transcription", "").strip()
+            if not text:
+                return self._send(200, {"status": "no transcription"})
+            if relay is None:
+                return self._send(200, {"status": "relay disabled"})
+            recorded_at = fields.get("recordedAt")
+            payload = {
+                "text": text,
+                "request_id": self.headers.get("X-Index-Delivery"),
+                "recorded_at": int(recorded_at) if recorded_at and recorded_at.isdigit() else None,
+                "trigger": self.headers.get("X-Index-Trigger"),
+            }
+            if not relay.enqueue(payload):
+                return self._send(200, {"status": "duplicate"})
+            print(f"[webhook {payload['request_id']}] {text[:60]}", flush=True)
+            self._send(200, {"status": "queued"})
 
         def log_message(self, fmt, *args):
             if not self.path.startswith("/replies?") and not self.path == "/replies":
@@ -125,8 +258,13 @@ def synthesize_with_say(text):
 
 def cmd_serve(args):
     store = ReplyStore(args.store)
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(store, args.token))
+    relay = None
+    if args.relay_url:
+        relay = Relay(args.relay_url, args.relay_token)
+        relay.start()
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(store, args.token, relay))
     print(f"Reply server on http://{args.host}:{args.port} (store: {args.store})", flush=True)
+    print(f"Webhook relay: {args.relay_url or 'off (set RELAY_URL in .env)'}", flush=True)
     server.serve_forever()
 
 
@@ -153,6 +291,7 @@ def cmd_push(args):
 
 
 def main():
+    load_env(ENV_PATH)
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -160,6 +299,8 @@ def main():
     s.add_argument("--host", default="0.0.0.0")
     s.add_argument("--port", type=int, default=8765)
     s.add_argument("--token", default=os.environ.get("REPLY_TOKEN", ""))
+    s.add_argument("--relay-url", default=os.environ.get("RELAY_URL", ""))
+    s.add_argument("--relay-token", default=os.environ.get("RELAY_TOKEN", ""))
     s.add_argument("--store", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "replies.jsonl"))
     s.set_defaults(func=cmd_serve)
 
