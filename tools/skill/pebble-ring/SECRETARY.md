@@ -33,4 +33,6 @@
 - Codex の場合は `conversation_id` も必要です。シェルで `echo $CODEX_THREAD_ID` を実行した値を入れます。
 - 参加すると、返り値の `guide`（統括用の運用指示）が届くので、読んで従います。
 - 参加の約8秒後に「[session-mail 接続確認]」が届くので、`channel_receive` を1回呼びます。続いて `pebble-ring` から使い方の説明が届きます。
-- `session_mail` のツールが見当たらないときは、MCP が登録されていません。ユーザーにそう伝えてください。
+- `session_mail` のツールが見当たらないときは、MCP が登録されていません。参加を試さずに、ユーザーに次を伝えてください。
+  1. 普通のターミナルで `claude mcp add --scope user session_mail -- node /Users/ramo/Services/Catchball/dist/bridge/main.js` を実行する（Codex の場合は `~/Services/Catchball/README.md` の手順2）
+  2. このセッションを終了し、`claude --dangerously-load-development-channels server:session_mail` で起動し直す
