@@ -35,4 +35,4 @@
 - 参加の約8秒後に「[session-mail 接続確認]」が届くので、`channel_receive` を1回呼びます。続いて `pebble-ring` から使い方の説明が届きます。
 - `session_mail` のツールが見当たらないときは、MCP が登録されていません。参加を試さずに、ユーザーに次を伝えてください。
   1. このセッションを終了する
-  2. 普通のターミナルで `~/Projects/Pebble-mobileapp/tools/skill/pebble-ring/secretary.sh` を実行する（Codex なら末尾に ` codex`）。MCP の登録から秘書の起動・接続まで自動で行う
+  2. 普通のターミナルで `~/Projects/Pebble-mobileapp/tools/skill/pebble-ring/secretary.sh` を実行する（Codex なら末尾に ` codex`）。秘書のフォルダーだけで MCP を有効にし、起動・接続まで自動で行う

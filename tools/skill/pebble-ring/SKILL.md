@@ -39,7 +39,7 @@ Talk to the user only through `pebble-ring`:
 
 ## Setting up a secretary
 
-Run `tools/skill/pebble-ring/secretary.sh` (or `secretary.sh codex`) in a terminal. It registers the Catchball MCP server on first use, starts the secretary in `~/Projects/secretary`, and hands it "read SECRETARY.md and connect" as the first message.
+Run `tools/skill/pebble-ring/secretary.sh` (or `secretary.sh codex`) in a terminal. It enables the Catchball MCP server for the secretary folder only (Claude Code: local-scope registration on first use; Codex: `-c` overrides per launch), starts the secretary in `~/Projects/secretary`, and hands it "read SECRETARY.md and connect" as the first message.
 
 `SECRETARY.md` is the single instruction file for the secretary: what Catchball is, the exact `channel_join` arguments, and how to reach the user through pebble-ring.
 pebble-ring sends the secretary an introduction once it sees `main` in the room. The room `voice` is created by pebble-ring if it does not exist.

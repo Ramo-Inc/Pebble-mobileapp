@@ -74,7 +74,9 @@ launchctl bootout gui/$(id -u)/com.ramo.pebble-ring                             
 ~/Projects/Pebble-mobileapp/tools/skill/pebble-ring/secretary.sh codex    # Codex
 ```
 
-- 初回だけ、Catchball の MCP（`session_mail`）を登録する（Claude Code は送受信のツールの許可も追加）。
+- Catchball の MCP（`session_mail`）は**秘書のフォルダー（`~/Projects/secretary`）だけ**で有効にする。ほかのプロジェクトには登録しない。
+  - Claude Code：初回だけ `--scope local` で登録し、送受信ツールの許可を `~/Projects/secretary/.claude/settings.local.json` に追加する
+  - Codex：設定ファイルは変えず、起動のときだけ `-c` で渡す
 - `~/Projects/secretary` で秘書を起動し、「[SECRETARY.md](SECRETARY.md) を読んで接続して」を最初のメッセージとして渡す。秘書はルーム `voice` に `main` として参加し、pebble-ring からも説明が届く。
 - Claude Code は起動のたびに Channel 機能の確認が出るので「I am using this for local development」を選ぶ。
 
