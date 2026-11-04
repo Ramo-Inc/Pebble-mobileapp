@@ -140,7 +140,7 @@ python3 tools/reply-server/reply_server.py push --token <トークン> --text ".
 | アプリに `Error: Reply server returned HTTP 401` | アプリとサーバーのトークンが違う |
 | アプリに接続エラー / `Local network prohibited` | URLのアドレス・ポート、サーバーが動いているか、iPhone のローカルネットワーク許可、Mac のファイアウォールを確認 |
 | 返事を送っても**何も届かなくなった** | `replies.jsonl` を消した（番号が1に戻った）可能性。アプリの Server URL を一度別の値にして Save → 元に戻して Save すると、アプリ側の番号がリセットされる |
-| 届いたが鳴らない | 作成から15分以上たっていた、音声なしで送った、または音声ファイルが壊れている。アプリのログで `ReplyAudio` を検索し、`received` / `playback start` / `playback end` / `playback failed` を確認 |
+| 届いたが鳴らない | アプリが iOS に止められている（開くかリングの通信で起きたときに再生される）、音声なしで送った、または音声ファイルが壊れている。アプリのログで `ReplyAudio` を検索し、`received` / `playback start` / `playback end` / `playback failed` を確認 |
 | ロック中・他アプリ表示中に鳴らない | リングがペアリングされているか確認 |
 | ポートが使用中で起動しない | `--port` で別の番号にし、アプリの Server URL も合わせる |
 | 文字起こしが転送されない | 起動時の `Webhook relay:` が `off` なら `.env` の `RELAY_URL` を確認。アプリの Webhook の Recent runs が失敗なら URL・`Authorization` ヘッダーを確認。サーバーのログに `dropped` があれば転送先の状態を確認 |

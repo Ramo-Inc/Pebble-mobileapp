@@ -23,8 +23,9 @@ import kotlin.uuid.Uuid
 class ReplyAudioServiceTest {
 
     private val now = Instant.fromEpochMilliseconds(1_800_000_000_000)
+    private var clockNow = now
     private val clock = object : Clock {
-        override fun now() = now
+        override fun now() = clockNow
     }
     private val audioBytes = byteArrayOf(1, 2, 3, 4)
     private val audioBase64 = Base64.encode(audioBytes)
@@ -116,6 +117,23 @@ class ReplyAudioServiceTest {
     }
 
     @Test
+    fun wakingUpPlaysTheWholeUnplayedBacklogOldestFirst() = runTest {
+        fun withOwnAudio(id: Long, createdAt: Instant = now) = reply(id, createdAt, Base64.encode(byteArrayOf(id.toByte())))
+        log.add(withOwnAudio(1, createdAt = now - 300.minutes), now - 300.minutes)
+        log.add(reply(2, audio = null), now)
+        log.add(withOwnAudio(3), now)
+        log.markPlayed(3)
+        log.add(withOwnAudio(4), now)
+        preferences.cursor = 4
+        val played = mutableListOf<Byte>()
+        service(player = { played += it.single() }).start()
+
+        val entries = log.entries.first { entries -> entries.filter { it.hasAudio }.all { it.played } }
+        assertEquals(listOf<Byte>(1, 4), played)
+        assertEquals(mapOf(1L to true, 2L to false, 3L to true, 4L to true), entries.associate { it.id to it.played })
+    }
+
+    @Test
     fun failedPlaybackStaysUnplayedAndDoesNotBlockTheNextReply() = runTest {
         var calls = 0
         api.replies = listOf(reply(2), reply(1))
@@ -148,19 +166,15 @@ class ReplyAudioRulesTest {
     }
 
     @Test
-    fun freshReplyWithAudioAutoPlays() {
-        assertTrue(ReplyAudioRules.shouldAutoPlay(entry(now - 1.minutes), now))
-    }
-
-    @Test
-    fun staleReplyIsNotAutoPlayed() {
-        assertFalse(ReplyAudioRules.shouldAutoPlay(entry(now - ReplyAudioRules.AUTO_PLAY_MAX_AGE - 1.minutes), now))
+    fun unplayedReplyWithAudioAutoPlaysWhateverItsAge() {
+        assertTrue(ReplyAudioRules.shouldAutoPlay(entry(now - 1.minutes)))
+        assertTrue(ReplyAudioRules.shouldAutoPlay(entry(now - 300.minutes)))
     }
 
     @Test
     fun textOnlyOrPlayedReplyIsNotAutoPlayed() {
-        assertFalse(ReplyAudioRules.shouldAutoPlay(entry(now, hasAudio = false), now))
-        assertFalse(ReplyAudioRules.shouldAutoPlay(entry(now, played = true), now))
+        assertFalse(ReplyAudioRules.shouldAutoPlay(entry(now, hasAudio = false)))
+        assertFalse(ReplyAudioRules.shouldAutoPlay(entry(now, played = true)))
     }
 
     @Test

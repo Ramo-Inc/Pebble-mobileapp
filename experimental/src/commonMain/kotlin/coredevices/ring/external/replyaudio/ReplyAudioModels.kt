@@ -2,8 +2,6 @@ package coredevices.ring.external.replyaudio
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlin.time.Duration
-import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
 
 /** One reply as served by the reply server's `GET /replies`. */
@@ -37,9 +35,6 @@ data class ReplyLogEntry(
 }
 
 object ReplyAudioRules {
-    /** Replies older than this when received are logged but not auto-played, e.g. a backlog after a long outage. */
-    val AUTO_PLAY_MAX_AGE: Duration = 15.minutes
-
     const val FEED_PREVIEW_COUNT = 5
 
     /** Replies after [cursor], each id once, oldest first. */
@@ -49,8 +44,7 @@ object ReplyAudioRules {
             .distinctBy { it.id }
             .sortedBy { it.id }
 
-    fun shouldAutoPlay(entry: ReplyLogEntry, now: Instant): Boolean =
-        entry.hasAudio && !entry.played && now - entry.createdAt <= AUTO_PLAY_MAX_AGE
+    fun shouldAutoPlay(entry: ReplyLogEntry): Boolean = entry.hasAudio && !entry.played
 
     fun feedPreview(log: List<ReplyLogEntry>, expanded: Boolean): List<ReplyLogEntry> =
         if (expanded) log else log.take(FEED_PREVIEW_COUNT)
