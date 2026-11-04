@@ -34,5 +34,5 @@
 - 参加すると、返り値の `guide`（統括用の運用指示）が届くので、読んで従います。
 - 参加の約8秒後に「[session-mail 接続確認]」が届くので、`channel_receive` を1回呼びます。続いて `pebble-ring` から使い方の説明が届きます。
 - `session_mail` のツールが見当たらないときは、MCP が登録されていません。参加を試さずに、ユーザーに次を伝えてください。
-  1. 普通のターミナルで `claude mcp add --scope user session_mail -- node /Users/ramo/Services/Catchball/dist/bridge/main.js` を実行する（Codex の場合は `~/Services/Catchball/README.md` の手順2）
-  2. このセッションを終了し、`claude --dangerously-load-development-channels server:session_mail` で起動し直す
+  1. このセッションを終了する
+  2. 普通のターミナルで `~/Projects/Pebble-mobileapp/tools/skill/pebble-ring/secretary.sh` を実行する（Codex なら末尾に ` codex`）。MCP の登録から秘書の起動・接続まで自動で行う

@@ -65,13 +65,20 @@ launchctl bootout gui/$(id -u)/com.ramo.pebble-ring                             
 | `POST /stt` | 返事サーバーからの転送（`{"text", "request_id", "recorded_at", "trigger"}`）。`Authorization: Bearer <PEBBLE_RING_TOKEN>` |
 | `POST /intro` | 秘書に使い方の説明を送り直す（秘書の会話を新しくしたとき） |
 
-## 秘書の用意
+## 秘書の起動
 
-秘書にする Claude Code / Codex のセッションに Catchball の MCP を登録し（`~/Services/Catchball/README.md`）、秘書に次のように頼む。
+ターミナルで1行。
 
-> ~/Projects/Pebble-mobileapp/tools/skill/pebble-ring/SECRETARY.md を読んで、その手順どおりに接続して。
+```bash
+~/Projects/Pebble-mobileapp/tools/skill/pebble-ring/secretary.sh          # Claude Code
+~/Projects/Pebble-mobileapp/tools/skill/pebble-ring/secretary.sh codex    # Codex
+```
 
-[SECRETARY.md](SECRETARY.md) が秘書向けの説明書（Catchball とは何か、参加の引数、pebble-ring を通したユーザーとのやり取り）。参加すると pebble-ring からも説明が届く。
+- 初回だけ、Catchball の MCP（`session_mail`）を登録する（Claude Code は送受信のツールの許可も追加）。
+- `~/Projects/secretary` で秘書を起動し、「[SECRETARY.md](SECRETARY.md) を読んで接続して」を最初のメッセージとして渡す。秘書はルーム `voice` に `main` として参加し、pebble-ring からも説明が届く。
+- Claude Code は起動のたびに Channel 機能の確認が出るので「I am using this for local development」を選ぶ。
+
+`SECRETARY.md` が秘書向けの説明書（Catchball とは何か、参加の引数、pebble-ring を通したユーザーとのやり取り）。
 
 ## テスト
 
