@@ -36,7 +36,15 @@ data class ReplyLogEntry(
     /** Set until the streamed audio has been played and saved. */
     val streamPath: String? = null,
     val sampleRate: Int? = null,
+    /** What the user said, for replies made in the app by Gemini Live. */
+    val userText: String? = null,
+    val source: String = SOURCE_SERVER,
 ) {
+    companion object {
+        const val SOURCE_SERVER = "server"
+        const val SOURCE_GEMINI = "gemini"
+    }
+
     val createdAt: Instant get() = Instant.fromEpochMilliseconds(createdAtMs)
 }
 

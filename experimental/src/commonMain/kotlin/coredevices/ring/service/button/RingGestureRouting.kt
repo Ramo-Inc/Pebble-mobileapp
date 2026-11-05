@@ -40,6 +40,8 @@ sealed interface GestureDestination {
     /** An installed plugin offering `send_to_agent`; [providerId] resolves through
      *  [coredevices.ring.agent.integrations.providers.IntegrationProviderRepository]. */
     data class AgentPlugin(val providerId: String) : Recording
+    /** A spoken exchange with Gemini Live from the app; the reply plays as it streams in. */
+    data object GeminiLive : Recording
     /** Posts the click count, plus the user's optional payload, to the gesture's webhook. */
     data object Webhook : Music
     /** Runs the gesture's typed command through the Index agent, as if it had been spoken. */

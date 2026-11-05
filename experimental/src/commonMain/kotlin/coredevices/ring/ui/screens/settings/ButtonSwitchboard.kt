@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Power
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -71,6 +72,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coredevices.ring.agent.integrations.providers.IntegrationProvider
 import coredevices.ring.agent.pebble_plugin.StorePlugin
+import coredevices.ring.external.geminilive.GeminiLiveSettingsSection
 import coredevices.ring.external.indexwebhook.IndexWebhookConfig
 import coredevices.ring.service.button.GestureDestination
 import coredevices.ring.service.button.GestureKind
@@ -137,6 +139,7 @@ fun destinationsFor(
         GestureDestination.IndexAgent,
         GestureDestination.LocalAgent,
         GestureDestination.WebSearch,
+        GestureDestination.GeminiLive,
         GestureDestination.WebhookOnly,
         GestureDestination.Nothing,
     )
@@ -162,6 +165,7 @@ fun GestureDestination.tileLabel(agentTitles: Map<String, String>?): String = wh
     GestureDestination.LocalAgent -> "Local agent"
     GestureDestination.WebSearch -> "Web search"
     GestureDestination.WebhookOnly -> "Webhook only"
+    GestureDestination.GeminiLive -> "Gemini Live"
     GestureDestination.Webhook -> "Webhook"
     GestureDestination.AgentCommand -> "Agent command"
     is GestureDestination.AgentPlugin ->
@@ -186,6 +190,7 @@ private val GestureDestination.optionSub: String?
         GestureDestination.LocalAgent -> "Runs on this phone only. Experimental, supports fewer actions"
         GestureDestination.WebSearch -> "Answer lands in your feed"
         GestureDestination.WebhookOnly -> "Raw recording to your endpoint, nothing else"
+        GestureDestination.GeminiLive -> "Talk with Gemini; the reply plays as it streams in"
         GestureDestination.Webhook -> "Click count and your payload to your endpoint"
         GestureDestination.AgentCommand -> "Sends a command, eg \"Unlock front door\""
         else -> null
@@ -200,6 +205,7 @@ private val GestureDestination.icon: ImageVector
         GestureDestination.LocalAgent -> Icons.Default.Smartphone
         GestureDestination.WebSearch -> Icons.Default.Search
         GestureDestination.WebhookOnly, GestureDestination.Webhook -> Icons.Default.Webhook
+        GestureDestination.GeminiLive -> Icons.Default.RecordVoiceOver
         GestureDestination.AgentCommand -> Icons.Default.Bolt
         is GestureDestination.AgentPlugin -> Icons.AutoMirrored.Filled.Send
         GestureDestination.Nothing -> Icons.Default.Block
@@ -247,6 +253,7 @@ internal fun ButtonSwitchboard(
                 )
                 if (gesture.kind == GestureKind.Recording &&
                     destination != GestureDestination.WebhookOnly &&
+                    destination != GestureDestination.GeminiLive &&
                     destination != GestureDestination.Nothing &&
                     webhookCopies(gesture)
                 ) {
@@ -546,8 +553,12 @@ private fun GestureDestinationSheet(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
             )
         }
+        if (current == GestureDestination.GeminiLive) {
+            GeminiLiveSettingsSection()
+        }
         if (gesture.kind == GestureKind.Recording &&
             current != GestureDestination.WebhookOnly &&
+            current != GestureDestination.GeminiLive &&
             current != GestureDestination.Nothing
         ) {
             HorizontalDivider(
@@ -564,7 +575,7 @@ private fun GestureDestinationSheet(
             }
         }
         if (current == GestureDestination.Webhook ||
-            (gesture.kind == GestureKind.Recording &&
+            (gesture.kind == GestureKind.Recording && current != GestureDestination.GeminiLive &&
                 (current == GestureDestination.WebhookOnly || webhookCopyOn))
         ) {
             WebhookSheetRow(

@@ -45,7 +45,7 @@ data class IndexWebhookConfig(
  * destination. A gesture routed to [GestureDestination.Nothing] never sends.
  */
 fun IndexWebhookConfig.sendsFor(destination: GestureDestination.Recording): Boolean =
-    isActive && destination != GestureDestination.Nothing
+    isActive && destination != GestureDestination.Nothing && destination != GestureDestination.GeminiLive
 
 /**
  * Stores one [IndexWebhookConfig] per gesture.

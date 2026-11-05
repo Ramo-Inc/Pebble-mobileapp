@@ -198,6 +198,7 @@ kotlin {
                 implementation(libs.ktor.client.contentNegotiation)
                 implementation(libs.ktor.client.serialization.json)
                 implementation(libs.ktor.client.logging)
+                implementation(libs.ktor.websockets)
                 implementation(libs.room.runtime)
                 implementation(libs.room.paging)
                 implementation(libs.sqlite.bundled)

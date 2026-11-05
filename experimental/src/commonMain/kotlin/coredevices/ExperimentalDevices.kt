@@ -17,6 +17,7 @@ import coredevices.ring.bugreport.RingRssiStatistics
 import coredevices.ring.database.Preferences
 import coredevices.ring.database.room.repository.RecordingRepository
 import coredevices.ring.external.indexwebhook.IndexWebhookDeliveryQueue
+import coredevices.ring.external.geminilive.GeminiLiveSessionManager
 import coredevices.ring.external.replyaudio.ReplyAudioService
 import coredevices.ring.service.IndexNotificationManager
 import coredevices.ring.service.RingSync
@@ -73,12 +74,14 @@ class ExperimentalDevices(
     private val libPebble: LibPebble,
     private val indexWebhookDeliveryQueue: IndexWebhookDeliveryQueue,
     private val replyAudioService: ReplyAudioService,
+    private val geminiLiveSessionManager: GeminiLiveSessionManager,
 ) {
     private val scope = CoroutineScope(Dispatchers.Default)
     fun appInit() {
         ringDelegate.appInit()
         indexWebhookDeliveryQueue.resumePendingTasks()
         replyAudioService.start()
+        geminiLiveSessionManager.start(ringSync.ringEvents)
         libIndex.init(
             permissionRequester.missingPermissions.distinctUntilChanged { old, new ->
                 (Permission.Bluetooth in old && Permission.Bluetooth !in new) || (Permission.Bluetooth !in old && Permission.Bluetooth in new)

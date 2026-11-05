@@ -50,4 +50,9 @@ class IndexWebhookSendDecisionTest {
         assertEquals("single-click-hold", RingGesture.Hold.webhookTriggerValue)
         assertEquals("double-click-hold", RingGesture.ClickHold.webhookTriggerValue)
     }
+
+    @Test
+    fun geminiLiveNeverSendsToTheWebhook() {
+        assertFalse(configured.sendsFor(GestureDestination.GeminiLive))
+    }
 }

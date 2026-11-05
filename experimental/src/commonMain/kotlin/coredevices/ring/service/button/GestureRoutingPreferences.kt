@@ -117,6 +117,7 @@ private fun GestureDestination.encode(): String = when (this) {
     GestureDestination.LocalAgent -> "local_agent"
     GestureDestination.WebSearch -> "web_search"
     GestureDestination.WebhookOnly -> "webhook_only"
+    GestureDestination.GeminiLive -> "gemini_live"
     is GestureDestination.AgentPlugin -> AGENT_PLUGIN_PREFIX + providerId
     GestureDestination.Webhook -> "webhook"
     GestureDestination.AgentCommand -> "agent_command"
@@ -132,6 +133,7 @@ private fun decodeDestination(raw: String): GestureDestination? = when {
     raw == "local_agent" -> GestureDestination.LocalAgent
     raw == "web_search" -> GestureDestination.WebSearch
     raw == "webhook_only" -> GestureDestination.WebhookOnly
+    raw == "gemini_live" -> GestureDestination.GeminiLive
     raw.startsWith(AGENT_PLUGIN_PREFIX) ->
         raw.removePrefix(AGENT_PLUGIN_PREFIX).takeIf { it.isNotBlank() }?.let { GestureDestination.AgentPlugin(it) }
     raw == "webhook" -> GestureDestination.Webhook

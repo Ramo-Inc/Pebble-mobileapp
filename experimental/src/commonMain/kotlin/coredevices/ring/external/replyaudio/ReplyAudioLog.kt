@@ -65,6 +65,28 @@ class ReplyAudioLog(
         entry
     }
 
+    /** Logs a reply made in the app (Gemini Live). Its id is negative so it never meets a server id. */
+    suspend fun addLocal(userText: String?, text: String, audio: ByteArray?, at: Instant, played: Boolean = false): ReplyLogEntry =
+        mutex.withLock {
+            var id = -at.toEpochMilliseconds()
+            while (_entries.value.any { it.id == id }) id--
+            if (audio != null) writeAudio(id, audio)
+            val entry = ReplyLogEntry(
+                id = id,
+                text = text,
+                createdAtMs = at.toEpochMilliseconds(),
+                receivedAtMs = at.toEpochMilliseconds(),
+                hasAudio = audio != null,
+                played = played,
+                userText = userText,
+                source = ReplyLogEntry.SOURCE_GEMINI,
+            )
+            val (kept, dropped) = ReplyAudioRules.prepend(_entries.value, entry, MAX_ENTRIES)
+            dropped.forEach { deleteAudio(it) }
+            persist(kept)
+            entry
+        }
+
     /** Stores the final text and audio of a streamed reply, so it replays like any other. */
     suspend fun completeStream(id: Long, text: String, audio: ByteArray?) = mutex.withLock {
         if (audio != null) writeAudio(id, audio)

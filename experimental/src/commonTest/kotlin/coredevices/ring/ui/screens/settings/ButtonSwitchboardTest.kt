@@ -57,6 +57,7 @@ class ButtonSwitchboardTest {
                 GestureDestination.IndexAgent,
                 GestureDestination.LocalAgent,
                 GestureDestination.WebSearch,
+                GestureDestination.GeminiLive,
                 GestureDestination.WebhookOnly,
                 GestureDestination.Nothing,
             ),

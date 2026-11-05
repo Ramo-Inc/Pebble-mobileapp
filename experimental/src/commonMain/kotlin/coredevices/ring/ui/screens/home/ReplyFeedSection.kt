@@ -82,6 +82,17 @@ private fun ReplyCard(entry: ReplyLogEntry, onPlay: () -> Unit) {
                 fontWeight = FontWeight.SemiBold,
             )
         }
+        entry.userText?.takeIf { it.isNotBlank() }?.let { said ->
+            Text(
+                "🎤 $said",
+                color = colors.onSurfaceVariant,
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
         Text(
             entry.text.ifBlank { "(no text)" },
             color = colors.onSurface,

@@ -76,6 +76,14 @@ import coredevices.ring.external.replyaudio.ReplyAudioLog
 import coredevices.ring.external.replyaudio.ReplyAudioPlayer
 import coredevices.ring.external.replyaudio.ReplyAudioPreferences
 import coredevices.ring.external.replyaudio.ReplyAudioService
+import coredevices.ring.external.replyaudio.ReplyPlaybackLock
+import coredevices.ring.external.geminilive.GeminiConversationHistory
+import coredevices.ring.external.geminilive.GeminiLiveConnector
+import coredevices.ring.external.geminilive.GeminiLiveKeyStorage
+import coredevices.ring.external.geminilive.GeminiLiveResponder
+import coredevices.ring.external.geminilive.GeminiLiveSessionManager
+import coredevices.ring.external.geminilive.KtorGeminiLiveConnector
+import coredevices.ring.external.geminilive.readPcm
 import coredevices.ring.external.replyaudio.ReplyStreamPlayer
 import coredevices.ring.external.replyaudio.createReplyStreamPlayer
 import coredevices.ring.agent.integrations.obsidian.ObsidianPreferences
@@ -130,6 +138,9 @@ import io.rebble.libpebblecommon.connection.LibPebble
 import org.koin.dsl.bind
 import org.koin.dsl.binds
 import org.koin.dsl.module
+import io.ktor.client.engine.HttpClientEngine
+import org.koin.core.parameter.parametersOf
+import kotlin.time.Duration.Companion.seconds
 
 class HackyPermissionRequesterProvider(val getter: () -> PermissionRequester) {
     fun get(): PermissionRequester = getter()
@@ -278,7 +289,18 @@ val experimentalModule = module {
     single<ReplyAudioApi> { ReplyAudioApiImpl(get()) }
     single<ReplyAudioPlayer> { createReplyAudioPlayer() }
     single<ReplyStreamPlayer> { createReplyStreamPlayer() }
-    single { ReplyAudioService(get(), get(), get(), get(), get(), get()) }
+    single { ReplyPlaybackLock() }
+    single { ReplyAudioService(get(), get(), get(), get(), get(), get(), playbackLock = get()) }
+    single<GeminiLiveConnector> {
+        KtorGeminiLiveConnector(get<HttpClientEngine> { parametersOf(60.seconds) }, get<RecordingBackgroundScope>())
+    }
+    singleOf(::GeminiConversationHistory)
+    singleOf(::GeminiLiveKeyStorage)
+    single { GeminiLiveSessionManager(get(), get(), get(), get(), get()) }
+    single {
+        val storage = get<RecordingStorage>()
+        GeminiLiveResponder(get(), get(), get(), get(), get(), get(), readRecording = { storage.readPcm(it) })
+    }
     singleOf(::RecordingOperationFactory)
     singleOf(::RealRecordingStorage) bind RecordingStorage::class
     singleOf(::RecordingUploadSyncHandler) bind SyncHandler::class

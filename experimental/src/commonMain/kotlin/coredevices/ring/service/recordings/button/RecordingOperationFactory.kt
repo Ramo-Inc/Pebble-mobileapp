@@ -10,6 +10,7 @@ import coredevices.ring.agent.integrations.providers.IntegrationProviderReposito
 import coredevices.libindex.database.repository.RingTransferRepository
 import coredevices.ring.database.room.repository.ItemRepository
 import coredevices.ring.database.room.repository.RecordingProcessingTaskRepository
+import coredevices.ring.external.geminilive.GeminiLiveRecordingOperation
 import coredevices.ring.external.indexwebhook.IndexWebhookDeliveryQueue
 import coredevices.ring.external.indexwebhook.IndexWebhookPayloadMode
 import coredevices.ring.external.indexwebhook.IndexWebhookPreferences
@@ -208,6 +209,7 @@ class RecordingOperationFactory(
                     )
                 }
             }
+            GestureDestination.GeminiLive -> GeminiLiveRecordingOperation(fileId)
             // maybeWrapWithWebhook layers the webhook send on top of this no-op.
             GestureDestination.WebhookOnly, GestureDestination.Nothing -> NoAgentRecordingOperation
         }
@@ -241,6 +243,7 @@ internal fun textChatModeFor(destination: GestureDestination.Recording): ChatMod
     GestureDestination.LocalAgent -> ChatMode.Local
     GestureDestination.IndexAgent,
     GestureDestination.WebhookOnly,
+    GestureDestination.GeminiLive,
     is GestureDestination.AgentPlugin,
     GestureDestination.Nothing -> ChatMode.Normal
 }

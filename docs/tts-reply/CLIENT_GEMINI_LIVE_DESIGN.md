@@ -146,3 +146,9 @@
 4. 事前接続（`GeminiLiveSessionManager`）＋単体テスト
 5. ボタン設定の選択肢（Gemini Live・API キー・会話リセット）とログ表示
 6. Mac mini でビルド・実機確認（G1〜G6）
+
+## 8. 実装状況（2026-11-05）
+
+- 1〜5 を実装済み。コードは `experimental/src/commonMain/kotlin/coredevices/ring/external/geminilive/`、テストは `experimental/src/commonTest/kotlin/coredevices/ring/external/geminilive/GeminiLiveTest.kt`。
+- 設計からの追加：Gemini Live を選んだ押し方には Webhook を被せない（`IndexWebhookConfig.sendsFor` で除外）。既存の Webhook ラッパーは、文字起こしを使う送り先以外の処理を「文字起こしだけ」に置き換えるため、被せると Gemini が動かなくなる。シートの「Also send to webhook」も出さない。
+- 未確認：ビルドと単体テストの実行、実機確認（G1〜G6）。Mac mini で行う。

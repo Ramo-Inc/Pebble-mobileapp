@@ -2,6 +2,7 @@ package coredevices.ring
 
 import coredevices.ring.agent.integrations.providers.pluginsEnabled
 import coredevices.ring.external.indexwebhook.IndexWebhookSettingsViewModel
+import coredevices.ring.external.geminilive.GeminiLiveSettingsViewModel
 import coredevices.ring.external.replyaudio.ReplyAudioViewModel
 import coredevices.ring.ui.components.recording.RecordingTraceTimelineViewModel
 import coredevices.ring.ui.viewmodel.AllAnswersViewModel
@@ -67,5 +68,6 @@ internal val viewmodelModule = module {
     viewModelOf(::ListenDialogViewModel)
     viewModelOf(::IndexWebhookSettingsViewModel)
     viewModelOf(::ReplyAudioViewModel)
+    viewModelOf(::GeminiLiveSettingsViewModel)
     viewModelOf(::RecordingTraceTimelineViewModel)
 }

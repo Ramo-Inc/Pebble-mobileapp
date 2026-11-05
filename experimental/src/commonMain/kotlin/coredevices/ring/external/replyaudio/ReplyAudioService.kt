@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.io.Buffer
 import kotlinx.io.readByteArray
@@ -56,6 +57,7 @@ class ReplyAudioService(
     private val streamPlayer: ReplyStreamPlayer,
     private val scope: RecordingBackgroundScope,
     private val clock: Clock = Clock.System,
+    private val playbackLock: ReplyPlaybackLock = ReplyPlaybackLock(),
 ) {
     companion object {
         val POLL_INTERVAL = 1.seconds
@@ -76,7 +78,7 @@ class ReplyAudioService(
         if (started) return
         started = true
         scope.launch { pollLoop() }
-        scope.launch { for (id in playRequests) playNow(id) }
+        scope.launch { for (id in playRequests) playbackLock.mutex.withLock { playNow(id) } }
     }
 
     fun replay(id: Long) {
