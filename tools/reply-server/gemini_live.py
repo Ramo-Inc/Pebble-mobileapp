@@ -13,6 +13,7 @@ import ssl
 import subprocess
 import tempfile
 import threading
+import time
 import wave
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -26,6 +27,7 @@ DEFAULT_LIVE_MODEL = "gemini-3.8-live"
 INPUT_RATE = 16000
 DEFAULT_OUTPUT_RATE = 24000
 AUDIO_CHUNK_BYTES = INPUT_RATE * 2  # one second of 16-bit mono
+MAX_SESSION_SECONDS = 120
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 DEFAULT_SYSTEM_PROMPT = (
     "あなたは、ユーザーが指輪型デバイス越しに話しかける音声アシスタントです。"
@@ -188,13 +190,16 @@ class LiveResult:
 class GeminiLive:
     """One Live API session per utterance: send the recorded audio, collect the spoken reply."""
 
-    def __init__(self, api_key, model, system_prompt=DEFAULT_SYSTEM_PROMPT, voice="", connect=WebSocket.connect, timeout=60):
+    def __init__(self, api_key, model, system_prompt=DEFAULT_SYSTEM_PROMPT, voice="", connect=WebSocket.connect, timeout=60,
+                 max_session=MAX_SESSION_SECONDS, clock=time.monotonic):
         self.api_key = api_key
         self.model = model if model.startswith("models/") else f"models/{model}"
         self.system_prompt = system_prompt
         self.voice = voice
         self.connect = connect
         self.timeout = timeout
+        self.max_session = max_session
+        self.clock = clock
 
     def setup_message(self, history):
         generation = {"responseModalities": ["AUDIO"]}
@@ -214,30 +219,33 @@ class GeminiLive:
 
     def respond(self, pcm16k, history=(), on_audio=None):
         """Returns the whole reply; [on_audio](pcm, sample_rate) also gets each audio chunk as it arrives."""
+        deadline = self.clock() + self.max_session
         ws = self.connect(f"{LIVE_URL}?key={self.api_key}", self.timeout)
         try:
             ws.send_json(self.setup_message(history))
-            while "setupComplete" not in self._next(ws):
+            while "setupComplete" not in self._next(ws, deadline):
                 pass
             ws.send_json({"realtimeInput": {"activityStart": {}}})
             for i in range(0, len(pcm16k), AUDIO_CHUNK_BYTES):
                 chunk = base64.b64encode(pcm16k[i:i + AUDIO_CHUNK_BYTES]).decode("ascii")
                 ws.send_json({"realtimeInput": {"audio": {"data": chunk, "mimeType": f"audio/pcm;rate={INPUT_RATE}"}}})
             ws.send_json({"realtimeInput": {"activityEnd": {}}})
-            return self._collect(ws, on_audio)
+            return self._collect(ws, on_audio, deadline)
         finally:
             ws.close()
 
-    def _next(self, ws):
+    def _next(self, ws, deadline):
+        if self.clock() > deadline:
+            raise LiveError(f"session cut off after {self.max_session}s")
         message = ws.recv_json()
         if "error" in message:
             raise LiveError(f"Live API error: {message['error']}")
         return message
 
-    def _collect(self, ws, on_audio=None):
+    def _collect(self, ws, on_audio, deadline):
         audio, user_text, reply_text, rate = [], [], [], DEFAULT_OUTPUT_RATE
         while True:
-            content = self._next(ws).get("serverContent")
+            content = self._next(ws, deadline).get("serverContent")
             if not content:
                 continue
             for part in content.get("modelTurn", {}).get("parts", []):

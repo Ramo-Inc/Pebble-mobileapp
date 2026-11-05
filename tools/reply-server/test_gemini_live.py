@@ -179,6 +179,22 @@ class GeminiLiveTest(unittest.TestCase):
         self.assertEqual(2, len(inputs) - 2)
         self.assertTrue(self.socket.closed)
 
+    def test_session_that_never_completes_is_cut_off_and_closed(self):
+        now = [0.0]
+
+        def clock():
+            now[0] += 10
+            return now[0]
+
+        endless = [{"setupComplete": {}}] + [{"serverContent": {"outputTranscription": {"text": "あ"}}}] * 100
+        self.socket = FakeLiveSocket(endless)
+        live = GeminiLive("KEY", "m", connect=lambda url, timeout: self.socket, max_session=60, clock=clock)
+
+        with self.assertRaisesRegex(LiveError, "60"):
+            live.respond(b"\x00\x00")
+        self.assertTrue(self.socket.closed)
+        self.assertGreater(len(self.socket.messages), 80)
+
     def test_error_message_raises_and_closes(self):
         live = self.live([{"error": {"message": "quota"}}])
         with self.assertRaisesRegex(LiveError, "quota"):

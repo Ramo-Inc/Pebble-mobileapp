@@ -147,6 +147,7 @@ Webhook で**録音そのもの**を送ると、Gemini Live が音声で直接�
 - 履歴を消して新しい会話にする：`python3 tools/reply-server/reply_server.py clear-history`
 - 録音の変換に macOS の `afconvert` を使う（なければ `ffmpeg`）。
 - 環境変数 `HTTPS_PROXY` があれば、Gemini への接続はそのプロキシを通る。
+- Gemini への接続は録音1件ごとに開き、返事が終わったら閉じる。終わりの合図が来なくても2分で打ち切って閉じる（やり直しはしない）。
 - 失敗したときは、理由を書いた文字だけの返事が iPhone の返事ログに届く。ログには `[voice <id>] failed: ...`。
 
 ## 7. 返事を送る
