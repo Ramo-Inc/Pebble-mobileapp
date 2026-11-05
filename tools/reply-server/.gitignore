@@ -2,3 +2,5 @@ replies.jsonl
 replies.jsonl.tmp
 .env
 __pycache__/
+conversation.jsonl
+conversation.jsonl.tmp

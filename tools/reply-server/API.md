@@ -79,7 +79,7 @@ Authorization: Bearer <トークン>
 | `400` | `{"error": "bad after"}` | `after` が整数でない |
 | `401` | `{"error": "unauthorized"}` | トークンが違う、またはない |
 
-## 5. `POST /webhook` — iPhone の Webhook を受け取り、文字起こしを転送する
+## 5. `POST /webhook` — iPhone の Webhook を受け取り、音声AIで返事する／文字起こしを転送する
 
 iPhone アプリの Index Webhook（`experimental/.../indexwebhook/INDEX_WEBHOOK_API.md`、バージョン1）をそのまま受け取る。
 
@@ -94,16 +94,24 @@ X-Index-Trigger: single-click-hold | double-click-hold
 X-Index-Test: true                       … テスト送信のときだけ
 ```
 
-使うフィールドは `transcription`（文字起こし）と `recordedAt`。`audio` は使わない。
+使うフィールドは `audio`（録音、M4A）、`transcription`（文字起こし）、`recordedAt`。
+
+振り分け：
+
+| 届いたもの | 動き |
+|---|---|
+| `audio` あり（Recording only / Both）で、音声AIが有効（`GEMINI_API_KEY` と `GEMINI_LIVE_MODEL` が設定済み） | **音声AI（Gemini Live）が会話履歴を踏まえて返事を作り**、`/replies` に登録する（文字＋WAV音声）。転送はしない |
+| `transcription` だけ（Transcription only）、または音声AIが無効 | 今までどおり `RELAY_URL` へ転送する |
 
 レスポンス（すべて受け取った時点で返す。転送の結果は待たない）：
 
 | ステータス | ボディ | 意味 |
 |---|---|---|
+| `200` | `{"status": "voice queued"}` | 音声AIの順番待ちに入れた |
 | `200` | `{"status": "queued"}` | 転送の順番待ちに入れた |
 | `200` | `{"status": "duplicate"}` | 同じ `X-Index-Delivery` をすでに受け取っている（アプリの再送）。転送しない |
 | `200` | `{"status": "ignored test event"}` | テスト送信。転送しない |
-| `200` | `{"status": "no transcription"}` | 文字起こしがない（録音だけの設定、ボタン操作のJSON）。転送しない |
+| `200` | `{"status": "no transcription"}` | 文字起こしがなく、音声AIも使えない（音声AIが無効で録音だけの設定、ボタン操作のJSON）。転送しない |
 | `200` | `{"status": "relay disabled"}` | `RELAY_URL` が未設定。転送しない |
 | `401` | `{"error": "unauthorized"}` | トークンが違う、またはない |
 | `413` | `{"error": "too large"}` | ボディが10MBを超えた |

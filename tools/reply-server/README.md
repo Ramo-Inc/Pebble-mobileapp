@@ -118,6 +118,35 @@ Index 設定 → **Webhook** → ジェスチャー（Hold & talk など）を�
 - 同じ録音（`X-Index-Delivery` が同じ）は1回しか転送しない。
 - 「Send test event」のテスト送信とボタン操作（クリック）は転送しない。
 
+## 6-2. 音声AIで直接返事する（Speech to Speech）
+
+Webhook で**録音そのもの**を送ると、Gemini Live が音声で直接返事をする。秘書セッションを通さないので速い。
+
+1. `.env` に追加して、サーバーを再起動する。
+
+   ```
+   GEMINI_API_KEY=<Google AI Studio の API キー>
+   GEMINI_LIVE_MODEL=<Live API のモデルID（AI Studio のモデル一覧の表記どおり）>
+   GEMINI_VOICE=            # 任意。例 Kore。空ならモデルの標準の声
+   GEMINI_SYSTEM_PROMPT=    # 任意。空なら「日本語で短く話す音声アシスタント」の指示
+   GEMINI_HISTORY_TURNS=20  # 返事に使う過去のやり取りの数
+   ```
+
+   起動時に `Voice replies: <モデルID>` と出れば有効。
+
+2. iPhone アプリ：Index 設定 → **Webhook** → ジェスチャーを選び、**送る内容**を切り替える。
+
+   | 送る内容 | 返事の作り方 |
+   |---|---|
+   | **Recording only**（おすすめ） | 音声AI。iPhone は文字起こしを待たずにすぐ送る |
+   | Both | 音声AI（文字起こしを待ってから送るぶん遅い） |
+   | Transcription only | 今までの仕組み（`RELAY_URL` へ転送） |
+
+- 会話履歴は `tools/reply-server/conversation.jsonl`（gitには入らない）。直近 `GEMINI_HISTORY_TURNS` 件のやり取りを毎回 Gemini に渡すので、続きの会話ができる。
+- 履歴を消して新しい会話にする：`python3 tools/reply-server/reply_server.py clear-history`
+- 録音の変換に macOS の `afconvert` を使う（なければ `ffmpeg`）。
+- 失敗したときは、理由を書いた文字だけの返事が iPhone の返事ログに届く。ログには `[voice <id>] failed: ...`。
+
 ## 7. 返事を送る
 
 ```bash
@@ -143,4 +172,5 @@ python3 tools/reply-server/reply_server.py push --token <トークン> --text ".
 | 届いたが鳴らない | アプリが iOS に止められている（開くかリングの通信で起きたときに再生される）、音声なしで送った、または音声ファイルが壊れている。アプリのログで `ReplyAudio` を検索し、`received` / `playback start` / `playback end` / `playback failed` を確認 |
 | ロック中・他アプリ表示中に鳴らない | リングがペアリングされているか確認 |
 | ポートが使用中で起動しない | `--port` で別の番号にし、アプリの Server URL も合わせる |
+| 音声AIの返事が来ない | 起動時の `Voice replies:` が `off` なら `.env` の `GEMINI_API_KEY`・`GEMINI_LIVE_MODEL` を確認。アプリの送る内容が Recording only か確認。サーバーのログの `[voice ...] failed:` に理由が出る（モデルIDの間違いは接続直後に切断される） |
 | 文字起こしが転送されない | 起動時の `Webhook relay:` が `off` なら `.env` の `RELAY_URL` を確認。アプリの Webhook の Recent runs が失敗なら URL・`Authorization` ヘッダーを確認。サーバーのログに `dropped` があれば転送先の状態を確認 |

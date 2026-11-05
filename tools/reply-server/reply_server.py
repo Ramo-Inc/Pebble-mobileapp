@@ -2,12 +2,14 @@
 """Minimal reply server for the Pebble app's "Reply audio" feature.
 
 The agent pushes replies (text + optional audio); the iPhone polls GET /replies and auto-plays them.
-Optionally receives the app's Index webhook at POST /webhook and relays the transcription as JSON
-to RELAY_URL. Settings are read from .env next to this file. Standard library only.
+Optionally receives the app's Index webhook at POST /webhook. A recording (audio part) is answered
+right away by Gemini Live when GEMINI_API_KEY is set; a transcription alone is relayed as JSON to
+RELAY_URL. Settings are read from .env next to this file. Standard library only.
 
   Run the server:   python3 reply_server.py serve [--token SECRET] [--port 8765]
   Push a reply:     python3 reply_server.py push --token SECRET --text "了解" [--audio reply.m4a | --say]
                                               [--request-id <X-Index-Delivery>]
+  Forget the voice conversation:  python3 reply_server.py clear-history
 """
 import argparse
 import base64
@@ -28,6 +30,14 @@ from email.policy import HTTP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from gemini_live import (
+    DEFAULT_SYSTEM_PROMPT,
+    ConversationHistory,
+    GeminiLive,
+    decode_to_pcm16k,
+    pcm_to_wav,
+)
+
 MAX_REPLIES = 200
 MAX_AUDIO_BYTES = 5 * 1024 * 1024
 MAX_BODY_BYTES = MAX_AUDIO_BYTES * 2
@@ -35,6 +45,8 @@ ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 RELAY_RETRY_DELAYS = (5, 15, 30)
 RELAY_TIMEOUT = 10
 RELAY_DEDUP_SIZE = 1000
+HERE = os.path.dirname(os.path.abspath(__file__))
+HISTORY_PATH = os.path.join(HERE, "conversation.jsonl")
 
 
 def load_env(path):
@@ -50,17 +62,26 @@ def load_env(path):
             os.environ.setdefault(key.strip(), value.strip().strip("'\""))
 
 
-def parse_multipart(content_type, body):
-    """Returns the text fields of a multipart/form-data body as {name: value}."""
+def parse_form(content_type, body):
+    """Returns ({name: text}, {name: bytes}) for the text fields and file parts of a multipart body."""
     message = BytesParser(policy=HTTP).parsebytes(
         f"Content-Type: {content_type}\r\n\r\n".encode("latin-1") + body
     )
-    fields = {}
+    fields, files = {}, {}
     for part in message.iter_parts():
         name = part.get_param("name", header="content-disposition")
-        if name and part.get_filename() is None:
+        if not name:
+            continue
+        if part.get_filename() is None:
             fields[name] = part.get_payload(decode=True).decode("utf-8")
-    return fields
+        else:
+            files[name] = part.get_payload(decode=True)
+    return fields, files
+
+
+def parse_multipart(content_type, body):
+    """Returns the text fields of a multipart/form-data body as {name: value}."""
+    return parse_form(content_type, body)[0]
 
 
 class RelayError(Exception):
@@ -133,6 +154,59 @@ class Relay:
                 self.sleep(self.retry_delays[attempt])
 
 
+class VoiceResponder:
+    """Answers recordings with Gemini Live one at a time, so each reply sees the previous exchange."""
+
+    def __init__(self, store, live, history, decode=decode_to_pcm16k):
+        self.store = store
+        self.live = live
+        self.history = history
+        self.decode = decode
+        self.queue = queue.Queue()
+        self.seen = OrderedDict()
+        self.lock = threading.Lock()
+
+    def start(self):
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def enqueue(self, payload):
+        """Returns False when this delivery was already accepted (the app re-sent it)."""
+        delivery = payload.get("request_id")
+        with self.lock:
+            if delivery:
+                if delivery in self.seen:
+                    return False
+                self.seen[delivery] = True
+                if len(self.seen) > RELAY_DEDUP_SIZE:
+                    self.seen.popitem(last=False)
+        self.queue.put(payload)
+        return True
+
+    def _run(self):
+        while True:
+            self.respond(self.queue.get())
+
+    def respond(self, payload):
+        label = payload.get("request_id") or "-"
+        started = time.monotonic()
+        try:
+            result = self.live.respond(self.decode(payload["audio"]), self.history.turns())
+        except Exception as e:
+            print(f"[voice {label}] failed: {e}", flush=True)
+            self.store.add(f"音声AIで返事を作れませんでした（{e}）", payload.get("request_id"), None)
+            return None
+        if not result.audio:
+            print(f"[voice {label}] no audio in the reply", flush=True)
+            self.store.add(result.reply_text or "音声AIから音声が返りませんでした", payload.get("request_id"), None)
+            return None
+        user_text = result.user_text or payload.get("text") or ""
+        audio_b64 = base64.b64encode(pcm_to_wav(result.audio, result.sample_rate)).decode("ascii")
+        reply = self.store.add(result.reply_text, payload.get("request_id"), audio_b64)
+        self.history.append(user_text, result.reply_text)
+        print(f"[voice {label}] reply {reply['id']} in {time.monotonic() - started:.1f}s: {result.reply_text[:60]}", flush=True)
+        return reply
+
+
 class ReplyStore:
     def __init__(self, path):
         self.path = path
@@ -165,7 +239,7 @@ class ReplyStore:
             return [r for r in self.replies if cursor is None or r["id"] > cursor]
 
 
-def make_handler(store, token, relay=None):
+def make_handler(store, token, relay=None, voice=None):
     class Handler(BaseHTTPRequestHandler):
         def _authorized(self):
             if not token:
@@ -222,8 +296,11 @@ def make_handler(store, token, relay=None):
                 return self._send(200, {"status": "ignored test event"})
             content_type = self.headers.get("Content-Type", "")
             # Button events arrive as JSON and carry no transcription.
-            fields = parse_multipart(content_type, body) if content_type.startswith("multipart/") else {}
+            fields, files = parse_form(content_type, body) if content_type.startswith("multipart/") else ({}, {})
             text = fields.get("transcription", "").strip()
+            audio = files.get("audio")
+            if audio and voice is not None:
+                return self._voice(audio, text)
             if not text:
                 return self._send(200, {"status": "no transcription"})
             if relay is None:
@@ -239,6 +316,13 @@ def make_handler(store, token, relay=None):
                 return self._send(200, {"status": "duplicate"})
             print(f"[webhook {payload['request_id']}] {text[:60]}", flush=True)
             self._send(200, {"status": "queued"})
+
+        def _voice(self, audio, text):
+            payload = {"audio": audio, "text": text, "request_id": self.headers.get("X-Index-Delivery")}
+            if not voice.enqueue(payload):
+                return self._send(200, {"status": "duplicate"})
+            print(f"[webhook {payload['request_id']}] recording {len(audio)} bytes -> voice", flush=True)
+            self._send(200, {"status": "voice queued"})
 
         def log_message(self, fmt, *args):
             if not self.path.startswith("/replies?") and not self.path == "/replies":
@@ -262,10 +346,24 @@ def cmd_serve(args):
     if args.relay_url:
         relay = Relay(args.relay_url, args.relay_token)
         relay.start()
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(store, args.token, relay))
+    voice = None
+    if args.gemini_api_key and args.gemini_model:
+        live = GeminiLive(args.gemini_api_key, args.gemini_model, args.gemini_prompt or DEFAULT_SYSTEM_PROMPT, args.gemini_voice)
+        voice = VoiceResponder(store, live, ConversationHistory(args.history, args.history_turns))
+        voice.start()
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(store, args.token, relay, voice))
     print(f"Reply server on http://{args.host}:{args.port} (store: {args.store})", flush=True)
     print(f"Webhook relay: {args.relay_url or 'off (set RELAY_URL in .env)'}", flush=True)
+    print(
+        f"Voice replies: {args.gemini_model if voice else 'off (set GEMINI_API_KEY and GEMINI_LIVE_MODEL in .env)'}",
+        flush=True,
+    )
     server.serve_forever()
+
+
+def cmd_clear_history(args):
+    ConversationHistory(args.history).clear()
+    print("conversation history cleared")
 
 
 def cmd_push(args):
@@ -301,8 +399,18 @@ def main():
     s.add_argument("--token", default=os.environ.get("REPLY_TOKEN", ""))
     s.add_argument("--relay-url", default=os.environ.get("RELAY_URL", ""))
     s.add_argument("--relay-token", default=os.environ.get("RELAY_TOKEN", ""))
-    s.add_argument("--store", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "replies.jsonl"))
+    s.add_argument("--store", default=os.path.join(HERE, "replies.jsonl"))
+    s.add_argument("--gemini-api-key", default=os.environ.get("GEMINI_API_KEY", ""))
+    s.add_argument("--gemini-model", default=os.environ.get("GEMINI_LIVE_MODEL", ""))
+    s.add_argument("--gemini-voice", default=os.environ.get("GEMINI_VOICE", ""))
+    s.add_argument("--gemini-prompt", default=os.environ.get("GEMINI_SYSTEM_PROMPT", ""))
+    s.add_argument("--history", default=HISTORY_PATH)
+    s.add_argument("--history-turns", type=int, default=int(os.environ.get("GEMINI_HISTORY_TURNS", "20")))
     s.set_defaults(func=cmd_serve)
+
+    c = sub.add_parser("clear-history")
+    c.add_argument("--history", default=HISTORY_PATH)
+    c.set_defaults(func=cmd_clear_history)
 
     u = sub.add_parser("push")
     u.add_argument("--server", default="http://127.0.0.1:8765")
