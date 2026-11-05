@@ -223,7 +223,8 @@ class GeminiLiveResponderTest {
     private val tokens = MemoryTokenStorage()
     private val keyStorage = GeminiLiveKeyStorage(tokens)
     private val history = GeminiConversationHistory(settings)
-    private val log = ReplyAudioLog(settings) { Path(SystemTemporaryDirectory, "gemini-live-test-${Uuid.random()}") }
+    private val logDirectory = Path(SystemTemporaryDirectory, "gemini-live-test-${Uuid.random()}")
+    private val log = ReplyAudioLog(settings) { logDirectory }
     private val routing = GestureRoutingPreferences(MapSettings(), PreferencesImpl(MapSettings())).also {
         it.setRoute(RingGesture.Hold, GestureDestination.GeminiLive)
     }
