@@ -83,6 +83,7 @@ import coredevices.ring.external.geminilive.GeminiLiveKeyStorage
 import coredevices.ring.external.geminilive.GeminiLiveResponder
 import coredevices.ring.external.geminilive.GeminiLiveSessionManager
 import coredevices.ring.external.geminilive.GeminiLiveStreamer
+import coredevices.ring.external.geminilive.GeminiSecretaryTool
 import coredevices.ring.external.geminilive.KtorGeminiLiveConnector
 import coredevices.ring.external.geminilive.RingAudioTap
 import coredevices.ring.external.geminilive.readPcm
@@ -298,12 +299,17 @@ val experimentalModule = module {
     }
     singleOf(::GeminiConversationHistory)
     singleOf(::GeminiLiveKeyStorage)
+    single { GeminiSecretaryTool(get(), get<HttpClientEngine> { parametersOf(10.seconds) }) }
     singleOf(::RingAudioTap)
     singleOf(::GeminiLiveStreamer)
     single { GeminiLiveSessionManager(get(), get(), get(), get(), get()) }
     single {
         val storage = get<RecordingStorage>()
-        GeminiLiveResponder(get(), get(), get(), get(), get(), get(), readRecording = { storage.readPcm(it) })
+        GeminiLiveResponder(
+            get(), get(), get(), get(), get(), get(),
+            readRecording = { storage.readPcm(it) },
+            onToolCall = get<GeminiSecretaryTool>()::execute,
+        )
     }
     singleOf(::RecordingOperationFactory)
     singleOf(::RealRecordingStorage) bind RecordingStorage::class

@@ -16,13 +16,23 @@
 
 | もの | 状態 |
 |---|---|
-| コード | すべて `master` に push 済み（機能は `a99d8c1e` まで。その後はドキュメントの整理） |
-| Android（moto g24、USB 接続） | 最新の debug ビルドを入れてある。**Hold & Talk → Gemini Live（アプリ内 Gemini）**、Double click & hold → Web search。アプリに Gemini の API キーを保存済み |
+| コード | アプリ内 Gemini から秘書への依頼機能を追加。詳細は下の「一次受付」 |
+| Android（moto g24、USB 接続） | 秘書への依頼機能を含む最新の debug ビルドを入れてある。**Hold & Talk → Gemini Live（アプリ内 Gemini）**、Double click & hold → Web search。アプリに Gemini の API キーを保存済み |
 | iPhone | 今日の変更（アプリ内 Gemini・流し込み）は**入っていない**。コンパイルが通ることだけ確認 |
 | Mac | 返事サーバー・pebble-ring・Catchball が常駐。Mac 経由の Gemini は有効（`Voice replies: gemini-3.8-live`）。秘書は必要なときに `secretary.sh` で起動 |
 | リング | Android とペアリング済み。ファームウェア 3.86.0 |
 
 実測（ボタンを離す→鳴り始め）：アプリ内 Gemini 3.6〜5.3秒、Mac 経由の Gemini 6.5〜7.3秒。内訳と理由は [CLIENT_GEMINI_LIVE_DESIGN.md](CLIENT_GEMINI_LIVE_DESIGN.md) §4。
+
+### アプリ内 Gemini は一次受付（ユーザー確定、2026-11-05 追記）
+
+- 調べものや細かい作業は `delegate_to_secretary(task)` で秘書へ投げる。Gemini は「秘書に依頼を投げました」と話して終了する。
+- **進捗・確認・結果はすべて秘書が管理。Gemini に結果を戻さない。** 既存の秘書の音声（AivisSpeech）と Reply audio で直接返す。
+- 接続先は Reply audio の Server URL・Token を再利用。自動再生も有効にする。Android は設定済み。Mac の返事サーバーは既存の `/webhook`（依頼文のみ）→ pebble-ring → 秘書を使う。秘書は引き続き `secretary.sh` で起動する必要がある。
+- `queued` は返事サーバーの受付。秘書の仕事が完了した意味ではない。未設定・認証エラー・転送無効を成功扱いしない。
+- 実 API の音声入力「今日のニュースを3件探してきてください」で、ツール1回→「秘書に依頼を投げました」の音声→終了を確認。送信先はテスト用に置換し、秘書に実際の仕事は送っていない。リングから秘書の実作業までの実機確認は未実施。
+- 関連する Android の単体テスト130件、返事サーバー34件、pebble-ring 27件、iOS のコンパイル確認に合格。iPhone へのインストールと実機確認は未実施。
+- API はツール呼び出しの直後にも `turnComplete` を送る。受付音声の終了まで待つ。ツールを呼んだ後の切断では、保存録音からの再処理に戻さず二重依頼を避ける。
 
 ## 2. ユーザーの返事待ち
 
@@ -39,7 +49,7 @@
 
 1. **リングの長押しの反応が悪い**（ユーザーの不満）。2026-11-05 の17回中10回で、長押しの最中に余分な押し方が記録された。アプリ側は吸収済み（最初の長押しで判定）。公式の説明に強さの指定はなく、「同じ力で押さえ続ける」と案内した（記録からの推測）。新しいファームウェアで直るかは §2 しだい。
 2. **iPhone 実機でのアプリ内 Gemini の確認**（[BUILD_AND_TEST.md](BUILD_AND_TEST.md) §5 の G7）。iOS の差し込み（`RingAudioTap.ios.kt`）は、ObjC の弱参照を避けるため包んだ物を強く持っている。
-3. **Gemini に時計も検索もない。** 「今何時」を間違える。指示文に今の時刻を入れるのは簡単にできる（ユーザーにはまだ聞いていない）。
+3. **Gemini 自体には時計も検索もない。** アプリ内 Gemini の調べもの・作業は秘書へ依頼する仕組みを追加済み。時刻の正確さは未確認。Mac 経由の Gemini は従来のまま。
 4. **流し込みは前処理を通さない。** 聞き取りの精度を引き続き見る。
 5. **画面を閉じた iPhone で、Mac からの返事がすぐ鳴らない**（iOS のアプリ一時停止）。調査は [WAKE_WITHOUT_PUSH_RESEARCH.md](WAKE_WITHOUT_PUSH_RESEARCH.md)。無料 Apple ID ではプッシュ通知が使えない。Android では起きない。
 6. 返事ログに、秘書経路の相づち・聞き返しも並ぶ。隠すかはユーザー未回答。

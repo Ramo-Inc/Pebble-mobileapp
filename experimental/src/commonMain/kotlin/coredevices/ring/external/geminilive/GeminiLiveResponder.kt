@@ -28,6 +28,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.io.buffered
 import kotlinx.io.readByteArray
+import kotlinx.serialization.json.JsonObject
 import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -116,6 +117,7 @@ class GeminiLiveResponder(
     private val streamPlayer: ReplyStreamPlayer,
     private val playbackLock: ReplyPlaybackLock,
     private val readRecording: suspend (fileId: String) -> Pair<ByteArray, Int>,
+    private val onToolCall: suspend (GeminiFunctionCall) -> JsonObject,
     private val clock: Clock = Clock.System,
 ) {
     private companion object {
@@ -133,7 +135,7 @@ class GeminiLiveResponder(
             playbackLock.mutex.withLock {
                 val session = sessions.take(apiKey)
                 logger.i { "Recording $fileId sent to Gemini (${pcm.size} bytes)" }
-                playReply { onAudio -> session.respond(pcm, sampleRate, onAudio) }
+                playReply { onAudio -> session.respond(pcm, sampleRate, onToolCall, onAudio) }
             }
         } catch (e: CancellationException) {
             throw e
@@ -173,12 +175,12 @@ class GeminiLiveResponder(
         val reply = try {
             playbackLock.mutex.withLock {
                 logger.i { "$label streamed to Gemini, utterance ended" }
-                playReply { onAudio -> streamed.endUtterance { chunk, rate -> playing = true; onAudio(chunk, rate) } }
+                playReply { onAudio -> streamed.endUtterance(onToolCall) { chunk, rate -> playing = true; onAudio(chunk, rate) } }
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            if (!playing) {
+            if (!playing && !streamed.toolCallAttempted) {
                 logger.w(e) { "Gemini failed for streamed $label, answering the stored recording instead" }
                 return false
             }

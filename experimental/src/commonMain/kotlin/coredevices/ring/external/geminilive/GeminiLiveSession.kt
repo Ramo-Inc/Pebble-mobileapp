@@ -16,6 +16,7 @@ import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.channels.produce
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.JsonObject
 import kotlin.time.Duration.Companion.minutes
 
 /** A text-message pipe to the Live API; the Ktor WebSocket in the app, a fake in tests. */
@@ -72,6 +73,8 @@ data class GeminiReply(val userText: String, val replyText: String, val audio: B
 
 /** One utterance and its reply over a connection whose setup (history included) is already done. */
 class GeminiLiveSession private constructor(private val connection: GeminiLiveConnection) {
+    var toolCallAttempted: Boolean = false
+        private set
 
     companion object {
         private const val AUDIO_CHUNK_SECONDS = 1
@@ -111,7 +114,12 @@ class GeminiLiveSession private constructor(private val connection: GeminiLiveCo
     }
 
     /** Sends [pcm] (16-bit mono at [sampleRate]) and returns the reply; [onAudio] gets each chunk as it arrives. */
-    suspend fun respond(pcm: ByteArray, sampleRate: Int, onAudio: suspend (ByteArray, Int) -> Unit): GeminiReply {
+    suspend fun respond(
+        pcm: ByteArray,
+        sampleRate: Int,
+        onToolCall: suspend (GeminiFunctionCall) -> JsonObject,
+        onAudio: suspend (ByteArray, Int) -> Unit,
+    ): GeminiReply {
         try {
             beginUtterance()
             sendAudio(pcm, sampleRate)
@@ -119,7 +127,7 @@ class GeminiLiveSession private constructor(private val connection: GeminiLiveCo
             close()
             throw e
         }
-        return endUtterance(onAudio)
+        return endUtterance(onToolCall, onAudio)
     }
 
     suspend fun beginUtterance() = connection.send(GeminiLiveProtocol.activityStart())
@@ -133,24 +141,41 @@ class GeminiLiveSession private constructor(private val connection: GeminiLiveCo
     }
 
     /** Marks the utterance as finished and returns the reply, closing the session either way. */
-    suspend fun endUtterance(onAudio: suspend (ByteArray, Int) -> Unit): GeminiReply {
+    suspend fun endUtterance(
+        onToolCall: suspend (GeminiFunctionCall) -> JsonObject,
+        onAudio: suspend (ByteArray, Int) -> Unit,
+    ): GeminiReply {
         try {
             connection.send(GeminiLiveProtocol.activityEnd())
-            return withinMaxWait("reply") { receiveReply(onAudio) }
+            return withinMaxWait("reply") { receiveReply(onToolCall, onAudio) }
         } finally {
             close()
         }
     }
 
-    private suspend fun receiveReply(onAudio: suspend (ByteArray, Int) -> Unit): GeminiReply {
+    private suspend fun receiveReply(
+        onToolCall: suspend (GeminiFunctionCall) -> JsonObject,
+        onAudio: suspend (ByteArray, Int) -> Unit,
+    ): GeminiReply {
         val userText = StringBuilder()
         val replyText = StringBuilder()
         val audio = mutableListOf<ByteArray>()
         var rate = GeminiLiveProtocol.OUTPUT_SAMPLE_RATE
+        val toolResponses = mutableMapOf<String, JsonObject>()
+        var awaitingToolAcknowledgement = false
         while (true) {
             when (val event = connection.nextEvent()) {
                 is GeminiServerEvent.Error -> throw GeminiLiveException(event.message)
+                is GeminiServerEvent.ToolCall -> {
+                    for (call in event.calls) {
+                        toolCallAttempted = true
+                        awaitingToolAcknowledgement = true
+                        val response = toolResponses[call.id] ?: onToolCall(call).also { toolResponses[call.id] = it }
+                        connection.send(GeminiLiveProtocol.toolResponse(call, response))
+                    }
+                }
                 is GeminiServerEvent.Content -> {
+                    if (event.audio.isNotEmpty() || event.outputText.isNotBlank()) awaitingToolAcknowledgement = false
                     userText.append(event.inputText)
                     replyText.append(event.outputText)
                     rate = event.sampleRate
@@ -158,7 +183,7 @@ class GeminiLiveSession private constructor(private val connection: GeminiLiveCo
                         audio += chunk
                         onAudio(chunk, rate)
                     }
-                    if (event.turnComplete) {
+                    if (event.turnComplete && !awaitingToolAcknowledgement) {
                         val all = ByteArray(audio.sumOf { it.size })
                         var offset = 0
                         for (chunk in audio) {

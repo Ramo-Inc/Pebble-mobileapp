@@ -81,6 +81,11 @@ $A shell run-as coredevices.coreapp cat shared_prefs/coredevices.coreapp_prefere
 | G5 | Reset conversation の後に続きを聞く | 前の内容を覚えていない |
 | G6 | キーを間違える | 返事ログに理由が出る。アプリは落ちない |
 | G7 | iPhone で G1〜G2 | 同じ（未確認） |
+| G8 | Reply audio の設定と秘書の起動を確認し、「今日のニュースを3件探して」と話す | Gemini は依頼の受付だけ話して終了。秘書が依頼を受け、既存の音声経路で進捗・結果を返す |
+| G9 | Reply audio の自動再生を無効にし、仕事を依頼する | Gemini が設定不足を伝える。送信したとは言わず、秘書にも仕事を送らない |
+| G10 | サーバーの認証エラーや転送無効の状態で仕事を依頼する | Gemini が受付失敗を伝える。成功したとは言わない |
+
+G8〜G10 は Android と iPhone でそれぞれ確認する。秘書の進捗・結果は Gemini に戻さない。iPhone の一時停止中に返事が遅れる制約は従来どおり。
 
 ### Mac 経由の Gemini（Webhook = Recording only）
 

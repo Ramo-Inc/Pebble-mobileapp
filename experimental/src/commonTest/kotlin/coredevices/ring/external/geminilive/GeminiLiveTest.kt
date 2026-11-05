@@ -20,7 +20,10 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemTemporaryDirectory
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -50,6 +53,11 @@ private fun content(
     val outputPart = output?.let { """"outputTranscription":{"text":"$it"},""" }.orEmpty()
     return """{"serverContent":{$parts$inputPart$outputPart"turnComplete":$turnComplete}}"""
 }
+
+private val noToolCall: suspend (GeminiFunctionCall) -> JsonObject = { error("Unexpected tool call") }
+
+private fun delegateCall(id: String = "call-1") =
+    """{"toolCall":{"functionCalls":[{"id":"$id","name":"delegate_to_secretary","args":{"task":"今日のニュースを探して"}}]}}"""
 
 private const val SETUP_COMPLETE = """{"setupComplete":{}}"""
 
@@ -107,6 +115,9 @@ class GeminiLiveProtocolTest {
         assertTrue("ユーザー: こんにちは\nあなた: どうも" in prompt)
         assertTrue("inputAudioTranscription" in setup)
         assertTrue("outputAudioTranscription" in setup)
+        val function = setup["tools"]!!.jsonArray.single().jsonObject["functionDeclarations"]!!.jsonArray.single().jsonObject
+        assertEquals("delegate_to_secretary", function["name"]!!.jsonPrimitive.content)
+        assertEquals("task", function["parameters"]!!.jsonObject["required"]!!.jsonArray.single().jsonPrimitive.content)
     }
 
     @Test
@@ -130,9 +141,64 @@ class GeminiLiveProtocolTest {
         assertTrue(GeminiLiveProtocol.parse("""{"error":{"message":"bad key"}}""") is GeminiServerEvent.Error)
         assertNull(GeminiLiveProtocol.parse("""{"usageMetadata":{}}"""))
     }
+
+    @Test
+    fun parsesFunctionCallAndMatchesTheResponseToItsId() {
+        val call = (GeminiLiveProtocol.parse(delegateCall()) as GeminiServerEvent.ToolCall).calls.single()
+        assertEquals("call-1", call.id)
+        assertEquals(GeminiLiveProtocol.DELEGATE_FUNCTION, call.name)
+        assertEquals("今日のニュースを探して", call.args["task"]!!.jsonPrimitive.content)
+        val result = buildJsonObject { put("status", "accepted") }
+        val response = Json.parseToJsonElement(GeminiLiveProtocol.toolResponse(call, result))
+            .jsonObject["toolResponse"]!!.jsonObject["functionResponses"]!!.jsonArray.single().jsonObject
+        assertEquals(call.id, response["id"]!!.jsonPrimitive.content)
+        assertEquals(call.name, response["name"]!!.jsonPrimitive.content)
+        assertEquals(result, response["response"])
+    }
 }
 
 class GeminiLiveSessionTest {
+
+    @Test
+    fun delegatesOnceAndEndsAfterTheSpokenAcknowledgementWithoutWaitingForTheSecretary() = runTest {
+        val connector = FakeConnector(mutableListOf(listOf(
+            SETUP_COMPLETE,
+            content(input = "今日のニュースを探して"),
+            delegateCall(),
+            delegateCall(),
+            content(turnComplete = true),
+            content(byteArrayOf(1, 0), output = "秘書に依頼を投げました", turnComplete = true),
+        )))
+        val session = GeminiLiveSession.open(connector, "KEY", emptyList())
+        val calls = mutableListOf<GeminiFunctionCall>()
+        val reply = session.respond(byteArrayOf(0, 0), 16000, onToolCall = {
+            calls += it
+            buildJsonObject { put("status", "accepted") }
+        }) { _, _ -> }
+
+        assertEquals(1, calls.size)
+        assertEquals("秘書に依頼を投げました", reply.replyText)
+        assertTrue(session.toolCallAttempted)
+        val connection = connector.connections.single()
+        assertEquals(2, connection.sent.count { "toolResponse" in Json.parseToJsonElement(it).jsonObject })
+        assertTrue(connection.closed)
+    }
+
+    @Test
+    fun sendsToolFailureToGeminiSoItCanReportThatTheRequestWasNotAccepted() = runTest {
+        val connector = FakeConnector(mutableListOf(listOf(
+            SETUP_COMPLETE, delegateCall(), content(output = "依頼できませんでした", turnComplete = true),
+        )))
+        val session = GeminiLiveSession.open(connector, "KEY", emptyList())
+        val failure = buildJsonObject { put("error", "サーバーが未設定です") }
+        val reply = session.respond(byteArrayOf(0, 0), 16000, onToolCall = { failure }) { _, _ -> }
+
+        val response = connector.connections.single().sent.map { Json.parseToJsonElement(it).jsonObject }
+            .single { "toolResponse" in it }["toolResponse"]!!.jsonObject["functionResponses"]!!.jsonArray.single().jsonObject
+        assertEquals(failure, response["response"])
+        assertEquals("依頼できませんでした", reply.replyText)
+        assertTrue(connector.connections.single().closed)
+    }
 
     @Test
     fun sendsTheRecordingBetweenActivityMarkersAndStreamsTheReply() = runTest {
@@ -147,7 +213,7 @@ class GeminiLiveSessionTest {
         val streamed = mutableListOf<Byte>()
         val pcm = ByteArray(16000 * 2 + 10) { 7 }
 
-        val reply = session.respond(pcm, 16000) { chunk, rate ->
+        val reply = session.respond(pcm, 16000, noToolCall) { chunk, rate ->
             assertEquals(24000, rate)
             streamed += chunk.toList()
         }
@@ -180,14 +246,14 @@ class GeminiLiveSessionTest {
         val connector = FakeConnector(mutableListOf(listOf(SETUP_COMPLETE, content(byteArrayOf(1, 0)))))
         val session = GeminiLiveSession.open(connector, "KEY", emptyList())
         connector.connections.single().incoming.close()
-        assertFailsWith<GeminiLiveException> { session.respond(byteArrayOf(0, 0), 16000) { _, _ -> } }
+        assertFailsWith<GeminiLiveException> { session.respond(byteArrayOf(0, 0), 16000, noToolCall) { _, _ -> } }
     }
 
     @Test
     fun replyThatNeverEndsIsCutOffAndClosed() = runTest {
         val connector = FakeConnector(mutableListOf(listOf(SETUP_COMPLETE, content(byteArrayOf(1, 0)))))
         val session = GeminiLiveSession.open(connector, "KEY", emptyList())
-        assertFailsWith<GeminiLiveException> { session.respond(byteArrayOf(0, 0), 16000) { _, _ -> } }
+        assertFailsWith<GeminiLiveException> { session.respond(byteArrayOf(0, 0), 16000, noToolCall) { _, _ -> } }
         assertTrue(connector.connections.single().closed)
     }
 
@@ -251,6 +317,7 @@ class GeminiLiveResponderTest {
         connector: FakeConnector,
         player: ReplyStreamPlayer = ReplyStreamPlayer { _, chunks -> for (chunk in chunks) Unit },
         sessions: GeminiLiveSessionManager = manager(connector),
+        onToolCall: suspend (GeminiFunctionCall) -> JsonObject = noToolCall,
     ) = GeminiLiveResponder(
         sessions = sessions,
         keyStorage = keyStorage,
@@ -259,6 +326,7 @@ class GeminiLiveResponderTest {
         streamPlayer = player,
         playbackLock = ReplyPlaybackLock(),
         readRecording = { byteArrayOf(9, 9) to 16000 },
+        onToolCall = onToolCall,
         clock = clock,
     )
 
@@ -370,6 +438,38 @@ class GeminiLiveResponderTest {
         assertEquals(listOf(listOf<Byte>(1, 0), listOf<Byte>(2, 0)), audio.map { Base64.decode(it["data"]!!.jsonPrimitive.content).take(2) })
         assertEquals("答え", log.entries.value.single().text)
         assertEquals(listOf(GeminiTurn("質問", "答え")), history.turns.value)
+    }
+
+    @Test
+    fun streamedDelegationIsHandledBeforeTheAcknowledgement() = runTest {
+        tokens.saveToken("gemini_live_api_key", "KEY")
+        val connector = FakeConnector(mutableListOf(listOf(
+            SETUP_COMPLETE, delegateCall(), content(output = "秘書に依頼を投げました", turnComplete = true),
+        )))
+        val parts = Channel<RingAudioPart>(Channel.UNLIMITED).sendAll(part(10, 10, 1, final = true, seconds = 2.0))
+        var submitted = 0
+        val responder = responder(connector, onToolCall = { submitted++; buildJsonObject { put("status", "accepted") } })
+
+        assertTrue(responder.respondToParts(parts) { true })
+        assertEquals(1, submitted)
+        assertEquals("秘書に依頼を投げました", log.entries.value.single().text)
+    }
+
+    @Test
+    fun droppedConnectionAfterDelegationDoesNotFallBackAndSubmitTheRecordingAgain() = runTest {
+        tokens.saveToken("gemini_live_api_key", "KEY")
+        val connector = FakeConnector(mutableListOf(listOf(SETUP_COMPLETE, delegateCall())))
+        val parts = Channel<RingAudioPart>(Channel.UNLIMITED).sendAll(part(10, 10, 1, final = true, seconds = 2.0))
+        var submitted = 0
+        val responder = responder(connector, onToolCall = {
+            submitted++
+            connector.connections.single().incoming.close()
+            buildJsonObject { put("status", "accepted") }
+        })
+
+        assertTrue(responder.respondToParts(parts) { true })
+        assertEquals(1, submitted)
+        assertTrue(log.entries.value.single().text.contains("返事を作れませんでした"))
     }
 
     @Test

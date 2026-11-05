@@ -19,12 +19,26 @@
 | 返事を作るもの | Gemini Live（スマホから直接） | Gemini Live（Mac の返事サーバーから） | 秘書セッション（Claude Code）＋要約（Claude Haiku） |
 | 音声 | Gemini の声 | Gemini の声 | AivisSpeech |
 | 返事の届き方 | その場で流しながら再生 | 返事サーバー → スマホが1秒ごとに取得、流しながら再生 | 返事サーバー → スマホが1秒ごとに取得して再生 |
-| 調べもの・道具 | なし | なし | 秘書が使える道具すべて |
+| 調べもの・道具 | ファンクションコールで秘書へ依頼。受付だけ話して終了 | なし | 秘書が使える道具すべて |
 | 会話履歴 | アプリに20往復 | Mac の `conversation.jsonl` に20往復 | 秘書セッションの文脈＋pebble-ring が直近2往復 |
 | 実測（離す→鳴り始め） | 3.6〜5.3秒 | 6.5〜7.3秒 | 相づちは数秒、本番は数十秒 |
 
 - ボタン設定の表示名「**Gemini Live**」は ① のこと。② は Webhook の送る内容で選ぶもので、ボタン設定には出てこない。
 - 行き先が Gemini Live の押し方には Webhook を被せない（`IndexWebhookConfig.sendsFor`）。
+
+### アプリ内 Gemini から秘書へ仕事を渡す
+
+```text
+リング → アプリ内 Gemini → delegate_to_secretary(task)
+                            → 返事サーバー POST /webhook（依頼文のみ）
+                            → pebble-ring → 秘書
+          ↓ 受付を確認したら終了                ↓
+「秘書に依頼を投げました」           進捗・確認・結果 → 既存の音声返答
+```
+
+Gemini は一次受付。調べもの・ニュース・作業・記録・リマインダーなどの依頼を、文脈を補った依頼文にして渡す。秘書の結果は Gemini に戻さず、既存の AivisSpeech／Reply audio の経路から直接届ける。雑談と依頼内容の聞き返しは Gemini が担当する。
+
+接続先と認証は **Index 設定 → Reply audio** の Server URL・Token を使う。自動再生も有効にする。Mac では返事サーバーの `RELAY_URL` と pebble-ring、秘書セッションの起動が必要。ファンクションコールの引数に接続先やトークンは渡さない。`queued` は返事サーバーが転送を受け付けた意味で、仕事の完了ではない。秘書が不在の場合の通知は既存の pebble-ring が担当する。
 
 ## 2. アプリ（`experimental` モジュール）
 
@@ -51,12 +65,15 @@
 | `GeminiLiveResponder.kt` | `respondToParts`：区切りを順に送り、最後の区切りの押し方が Gemini Live なら `activityEnd` を送って返事を流しながら再生 → 返事ログと会話履歴に保存。違えば返事を作らせずに閉じる。`respond(fileId)`：保存済みの録音をまとめて送る従来の方法（流し込みが答えられなかったときの予備） |
 | `GeminiLiveRecordingOperation.kt` | 録音処理の順番待ちから呼ばれる。転送の開始番号で流し込み済みの返事を探し、答え済みなら何もしない |
 | `GeminiLiveSession.kt` | Live API の WebSocket 1本＝会話1回。`open`（初期設定）→ `beginUtterance` → `sendAudio` → `endUtterance`。初期設定と返事待ちはそれぞれ最長2分 |
+| `GeminiSecretaryTool.kt` | `delegate_to_secretary` を実行。既存の Reply audio 設定を使い、音声なしの multipart を `/webhook` に送る。受付結果だけ Gemini に返す |
 | `GeminiLiveProtocol.kt` | 送受信する JSON。モデル `gemini-3.8-live`、音声出力、自動の発話区切りはオフ、聞き取りと返事の文字起こしはオン、指示文の後ろに会話履歴 |
 | `GeminiLiveStores.kt` | API キー（`IntegrationTokenStorage`、Android は Keystore で暗号化）と会話履歴（20往復） |
 | `GeminiLiveSettings.kt` | ボタン設定内の「Gemini API key」「Save key」「Reset conversation」 |
 | `GeminiLiveSessionManager`（`GeminiLiveResponder.kt` 内） | リングの転送が始まったら先に接続・初期設定を済ませる。30秒使われなければ閉じる |
 
 区切りの流し込みの詳細と実測は [CLIENT_GEMINI_LIVE_DESIGN.md](CLIENT_GEMINI_LIVE_DESIGN.md)。
+
+`GeminiLiveProtocol` はツール定義・`toolCall` の受信・`toolResponse` の送信にも対応。同じ呼び出し ID は同じセッション内で再実行しない。ツール呼び出し後は、音声がまだ鳴っていなくても保存録音からの再処理に戻さない（依頼の二重送信を避ける）。
 
 ### 2-3. 返事の受信と再生（`external/replyaudio/`）
 
