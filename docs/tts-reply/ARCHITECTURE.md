@@ -79,7 +79,7 @@ Mac の返事サーバーに溜まった返事（② と ③）を取りに行�
 
 ### 2-5. Android の文字起こし（`util` モジュール）
 
-`util/src/androidMain/kotlin/coredevices/util/transcription/PlatformSpeechRecognizer.android.kt`：Android 13 以上の端末内音声認識（Google）で、録音の PCM を `EXTRA_AUDIO_SOURCE` から読ませる。日本語の区切りはつなげるだけ。③ の経路（Transcription only）で使う。iOS は `PlatformSpeechRecognizer.ios.kt`（Apple の音声認識）。
+`util/src/androidMain/kotlin/coredevices/util/transcription/PlatformSpeechRecognizer.android.kt`：Android 13 以上の端末内音声認識（Google）で、録音の PCM を `EXTRA_AUDIO_SOURCE` から読ませる。日本語の区切りはつなげるだけ。③ の経路（Transcription only）で使う。iOS は `PlatformSpeechRecognizer.ios.kt`（Apple の SpeechAnalyzer、iOS 26 以上）。
 
 ### 2-6. DI と起動
 
