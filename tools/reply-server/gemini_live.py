@@ -16,11 +16,13 @@ import threading
 import wave
 from dataclasses import dataclass
 from urllib.parse import urlparse
+from urllib.request import getproxies, proxy_bypass
 
 LIVE_URL = (
     "wss://generativelanguage.googleapis.com/ws/"
     "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 )
+DEFAULT_LIVE_MODEL = "gemini-3.8-live"
 INPUT_RATE = 16000
 DEFAULT_OUTPUT_RATE = 24000
 AUDIO_CHUNK_BYTES = INPUT_RATE * 2  # one second of 16-bit mono
@@ -48,7 +50,7 @@ class WebSocket:
         u = urlparse(url)
         secure = u.scheme == "wss"
         port = u.port or (443 if secure else 80)
-        sock = socket.create_connection((u.hostname, port), timeout=timeout)
+        sock = open_socket(u.hostname, port, "https" if secure else "http", timeout)
         if secure:
             sock = ssl.create_default_context().wrap_socket(sock, server_hostname=u.hostname)
         key = base64.b64encode(os.urandom(16)).decode("ascii")
@@ -139,6 +141,32 @@ class WebSocket:
         if mask:
             payload = mask_bytes(payload, mask)
         return bool(b0 & 0x80), b0 & 0x0F, payload
+
+
+def open_socket(host, port, scheme, timeout):
+    """Connects directly, or through an HTTP CONNECT tunnel when the environment sets a proxy."""
+    proxy = getproxies().get(scheme)
+    if not proxy or proxy_bypass(host):
+        return socket.create_connection((host, port), timeout=timeout)
+    p = urlparse(proxy if "://" in proxy else f"http://{proxy}")
+    sock = socket.create_connection((p.hostname, p.port or 80), timeout=timeout)
+    auth = ""
+    if p.username:
+        token = base64.b64encode(f"{p.username}:{p.password or ''}".encode()).decode("ascii")
+        auth = f"Proxy-Authorization: Basic {token}\r\n"
+    sock.sendall(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n{auth}\r\n".encode("ascii"))
+    response = b""
+    # Byte by byte, so nothing after the proxy's reply is consumed here.
+    while not response.endswith(b"\r\n\r\n"):
+        chunk = sock.recv(1)
+        if not chunk:
+            raise LiveError("proxy closed the connection")
+        response += chunk
+    status = response.split(b"\r\n", 1)[0].decode("latin-1")
+    if " 200 " not in status + " ":
+        sock.close()
+        raise LiveError(f"proxy refused the tunnel: {status}")
+    return sock
 
 
 def mask_bytes(payload, mask):

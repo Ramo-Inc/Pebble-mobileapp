@@ -16,6 +16,7 @@ from gemini_live import (
     LiveResult,
     WebSocket,
     mask_bytes,
+    open_socket,
     pcm_to_wav,
 )
 from reply_server import ReplyStore, VoiceResponder, parse_form
@@ -82,6 +83,39 @@ class WebSocketTest(unittest.TestCase):
         self.server_sock.sendall(server_frame(0x8, (1008).to_bytes(2, "big") + b"bad model"))
         with self.assertRaisesRegex(LiveError, "1008.*bad model"):
             self.ws.recv()
+
+
+class OpenSocketTest(unittest.TestCase):
+    def test_tunnels_through_the_environment_proxy(self):
+        proxy = socket.socket()
+        proxy.bind(("127.0.0.1", 0))
+        proxy.listen(1)
+        requests = []
+
+        def serve():
+            conn, _ = proxy.accept()
+            data = b""
+            while b"\r\n\r\n" not in data:
+                data += conn.recv(4096)
+            requests.append(data.decode())
+            conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            conn.sendall(b"tunnel-ok")
+            conn.close()
+
+        threading.Thread(target=serve, daemon=True).start()
+        saved = {k: os.environ.pop(k, None) for k in ("https_proxy", "HTTPS_PROXY", "no_proxy", "NO_PROXY")}
+        os.environ["https_proxy"] = f"http://127.0.0.1:{proxy.getsockname()[1]}"
+        try:
+            sock = open_socket("live.example.com", 443, "https", timeout=5)
+            self.assertEqual(b"tunnel-ok", sock.recv(100))
+            sock.close()
+        finally:
+            os.environ.pop("https_proxy", None)
+            for k, v in saved.items():
+                if v is not None:
+                    os.environ[k] = v
+            proxy.close()
+        self.assertTrue(requests[0].startswith("CONNECT live.example.com:443 HTTP/1.1"))
 
 
 class FakeLiveSocket:

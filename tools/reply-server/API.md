@@ -100,7 +100,7 @@ X-Index-Test: true                       … テスト送信のときだけ
 
 | 届いたもの | 動き |
 |---|---|
-| `audio` あり（Recording only / Both）で、音声AIが有効（`GEMINI_API_KEY` と `GEMINI_LIVE_MODEL` が設定済み） | **音声AI（Gemini Live）が会話履歴を踏まえて返事を作り**、`/replies` に登録する（文字＋WAV音声）。転送はしない |
+| `audio` あり（Recording only / Both）で、音声AIが有効（`GEMINI_API_KEY` または `GOOGLE_CLOUD_API_KEY` が設定済み） | **音声AI（Gemini Live）が会話履歴を踏まえて返事を作り**、`/replies` に登録する（文字＋WAV音声）。転送はしない |
 | `transcription` だけ（Transcription only）、または音声AIが無効 | 今までどおり `RELAY_URL` へ転送する |
 
 レスポンス（すべて受け取った時点で返す。転送の結果は待たない）：

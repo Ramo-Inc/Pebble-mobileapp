@@ -31,6 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from gemini_live import (
+    DEFAULT_LIVE_MODEL,
     DEFAULT_SYSTEM_PROMPT,
     ConversationHistory,
     GeminiLive,
@@ -355,7 +356,7 @@ def cmd_serve(args):
     print(f"Reply server on http://{args.host}:{args.port} (store: {args.store})", flush=True)
     print(f"Webhook relay: {args.relay_url or 'off (set RELAY_URL in .env)'}", flush=True)
     print(
-        f"Voice replies: {args.gemini_model if voice else 'off (set GEMINI_API_KEY and GEMINI_LIVE_MODEL in .env)'}",
+        f"Voice replies: {args.gemini_model if voice else 'off (set GEMINI_API_KEY in .env)'}",
         flush=True,
     )
     server.serve_forever()
@@ -400,8 +401,10 @@ def main():
     s.add_argument("--relay-url", default=os.environ.get("RELAY_URL", ""))
     s.add_argument("--relay-token", default=os.environ.get("RELAY_TOKEN", ""))
     s.add_argument("--store", default=os.path.join(HERE, "replies.jsonl"))
-    s.add_argument("--gemini-api-key", default=os.environ.get("GEMINI_API_KEY", ""))
-    s.add_argument("--gemini-model", default=os.environ.get("GEMINI_LIVE_MODEL", ""))
+    s.add_argument(
+        "--gemini-api-key", default=os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_CLOUD_API_KEY", "")
+    )
+    s.add_argument("--gemini-model", default=os.environ.get("GEMINI_LIVE_MODEL") or DEFAULT_LIVE_MODEL)
     s.add_argument("--gemini-voice", default=os.environ.get("GEMINI_VOICE", ""))
     s.add_argument("--gemini-prompt", default=os.environ.get("GEMINI_SYSTEM_PROMPT", ""))
     s.add_argument("--history", default=HISTORY_PATH)
