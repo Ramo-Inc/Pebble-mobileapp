@@ -168,6 +168,31 @@ class WebhookVoiceRoutingTest(WebhookEndpointTest):
         self.post(webhook_body(), **{"X-Index-Delivery": "d1"})
         self.assertEqual("duplicate", self.post(webhook_body(), **{"X-Index-Delivery": "d1"})[1]["status"])
 
+    def get(self, path, token="secret"):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.server.server_port}{path}", headers={"Authorization": f"Bearer {token}"}
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return resp.status, resp.headers.get("Content-Type"), resp.read()
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, e.headers.get("Content-Type"), e.read()
+
+    def test_streams_a_reply_and_serves_it_by_id(self):
+        reply = self.voice.store.add("", "d1", None, sample_rate=24000)
+        self.voice.streams.open(reply["id"], 24000)
+        self.voice.streams.append(reply["id"], b"\x01\x02")
+        threading.Timer(0.1, lambda: (self.voice.streams.append(reply["id"], b"\x03\x04"), self.voice.streams.finish(reply["id"]))).start()
+
+        status, content_type, body = self.get(f"/replies/{reply['id']}/stream")
+        self.assertEqual((200, "audio/L16; rate=24000; channels=1", b"\x01\x02\x03\x04"), (status, content_type, body))
+        status, _, body = self.get(f"/replies/{reply['id']}")
+        self.assertEqual((200, f"/replies/{reply['id']}/stream"), (status, json.loads(body)["stream"]))
+        self.assertEqual(404, self.get("/replies/999/stream")[0])
+        self.assertEqual(404, self.get("/replies/999")[0])
+        self.assertEqual(401, self.get(f"/replies/{reply['id']}/stream", token="wrong")[0])
+
     # Inherited tests that assume recordings reach the relay do not apply here.
     test_queues_transcription_for_relay = None
     test_resent_delivery_is_not_queued_again = None

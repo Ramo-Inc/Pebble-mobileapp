@@ -6,6 +6,7 @@ import coredevices.ring.util.AudioPlayer
 import coredevices.ring.util.PlaybackState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,6 +18,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.io.Buffer
+import kotlinx.io.readByteArray
+import kotlin.io.encoding.Base64
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -50,11 +53,13 @@ class ReplyAudioService(
     private val api: ReplyAudioApi,
     private val log: ReplyAudioLog,
     private val player: ReplyAudioPlayer,
+    private val streamPlayer: ReplyStreamPlayer,
     private val scope: RecordingBackgroundScope,
     private val clock: Clock = Clock.System,
 ) {
     companion object {
-        val POLL_INTERVAL = 3.seconds
+        val POLL_INTERVAL = 1.seconds
+        const val DEFAULT_STREAM_SAMPLE_RATE = 24000
         /** A poll gap longer than this means iOS suspended the app; on resume the unplayed backlog is queued. */
         val WAKE_GAP = 10.seconds
         private val logger = Logger.withTag("ReplyAudioService")
@@ -124,6 +129,12 @@ class ReplyAudioService(
 
     private suspend fun playNow(id: Long) {
         try {
+            val entry = log.entries.value.firstOrNull { it.id == id } ?: return
+            val streamPath = entry.streamPath
+            if (streamPath != null && playStreamed(entry, streamPath)) {
+                log.markPlayed(id)
+                return
+            }
             val audio = log.readAudio(id) ?: return
             logger.i { "Reply $id playback start" }
             player.play(audio)
@@ -136,5 +147,52 @@ class ReplyAudioService(
         } finally {
             queued.update { it - id }
         }
+    }
+
+    /**
+     * Plays the reply while the server is still producing it, then stores its final text and audio.
+     * Returns false when nothing could be streamed; the stored file (if the server finished it) is played instead.
+     */
+    private suspend fun playStreamed(entry: ReplyLogEntry, streamPath: String): Boolean {
+        val config = preferences.config.value
+        val received = Buffer()
+        logger.i { "Reply ${entry.id} stream start" }
+        val streamError = coroutineScope {
+            val chunks = Channel<ByteArray>(Channel.UNLIMITED)
+            val playback = launch {
+                streamPlayer.playStream(entry.sampleRate ?: DEFAULT_STREAM_SAMPLE_RATE, chunks)
+            }
+            val error = try {
+                api.streamAudio(config.url, config.token, streamPath) { chunk ->
+                    received.write(chunk)
+                    chunks.send(chunk)
+                }
+                null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                e
+            } finally {
+                chunks.close()
+            }
+            playback.join()
+            error
+        }
+        val streamed = received.readByteArray()
+        if (streamError != null) logger.w { "Reply ${entry.id} stream failed after ${streamed.size} bytes: ${streamError.message}" }
+        val final = try {
+            api.fetchReply(config.url, config.token, entry.id)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.w { "Reply ${entry.id} final text unavailable: ${e.message}" }
+            null
+        }
+        val serverAudio = final?.audioBase64?.takeIf { it.isNotBlank() }?.let { Base64.decode(it) }
+        val audio = serverAudio
+            ?: streamed.takeIf { it.isNotEmpty() }?.let { pcm16MonoToWav(it, entry.sampleRate ?: DEFAULT_STREAM_SAMPLE_RATE) }
+        log.completeStream(entry.id, final?.text?.ifBlank { null } ?: entry.text, audio)
+        logger.i { "Reply ${entry.id} stream end (${streamed.size} bytes)" }
+        return streamed.isNotEmpty()
     }
 }

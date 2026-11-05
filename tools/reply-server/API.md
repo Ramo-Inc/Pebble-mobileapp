@@ -32,6 +32,10 @@
 | `text` | 文字列 | 登録側 | 返事の文字。空文字のこともある |
 | `audio_base64` | 文字列 / `null` | 登録側 | 音声ファイル（M4A推奨・MP3・WAV）の中身をbase64にしたもの |
 | `created_at` | 整数 | サーバー | 登録した時刻。Unix時刻（ミリ秒） |
+| `stream` | 文字列 | サーバー | 音声AIの返事だけ。音声を作っている途中から聞ける PCM ストリームのパス（例 `/replies/12/stream`） |
+| `sample_rate` | 整数 | サーバー | `stream` のサンプリングレート（Gemini Live は 24000） |
+
+音声AIの返事は、最初の音声ができた時点で `text` が空・`audio_base64` が `null`・`stream` 付きで登録され、話し終わると同じ `id` のまま `text` と `audio_base64`（WAV）が入る。
 
 ## 3. `POST /replies` — 返事を登録する
 
@@ -78,6 +82,21 @@ Authorization: Bearer <トークン>
 | `200` | `{"replies": [ <返事>, ... ]}` | 番号の小さい順。新しい返事がなければ空の配列 |
 | `400` | `{"error": "bad after"}` | `after` が整数でない |
 | `401` | `{"error": "unauthorized"}` | トークンが違う、またはない |
+
+## 4-2. `GET /replies/{id}` — 返事を1件取得する
+
+返事のデータ（2章）をそのまま返す。ないときは `404`。ストリーム再生のあと、最終の文字と音声を取りに来るのに使う。
+
+## 4-3. `GET /replies/{id}/stream` — 返事の音声をストリームで受け取る
+
+```
+GET /replies/12/stream
+Authorization: Bearer <トークン>
+```
+
+- `200`、`Content-Type: audio/L16; rate=24000; channels=1`。本体は 16bit リトルエンディアン・モノラルの PCM。
+- 最初から送り、音声AIが話し終わるまで、できた分をすぐ流す。終わったら接続を閉じる（長さは事前に分からない）。
+- 話し終わったあとも、直近20件のストリームはメモリに残るので取り直せる。サーバーを再起動すると消える（`404`）→ `GET /replies/{id}` の `audio_base64` を使う。
 
 ## 5. `POST /webhook` — iPhone の Webhook を受け取り、音声AIで返事する／文字起こしを転送する
 
