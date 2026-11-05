@@ -54,6 +54,8 @@ class GestureRoutingTest {
         assertEquals(RingGesture.Hold, RingGesture.forRecordingSequence(listOf(long) + List(14) { short }))
         assertEquals(RingGesture.ClickHold, RingGesture.forRecordingSequence(listOf(short, long)))
         assertEquals(RingGesture.ClickHold, RingGesture.forRecordingSequence(listOf(short, long, short, short)))
+        assertEquals(RingGesture.Hold, RingGesture.forRecordingSequence(listOf(long, long, long)))
+        assertEquals(RingGesture.ClickHold, RingGesture.forRecordingSequence(listOf(short, long, long, short)))
         assertNull(RingGesture.forRecordingSequence(listOf(short, short, long)))
         assertNull(RingGesture.forRecordingSequence(listOf(short, short)))
         assertNull(RingGesture.forRecordingSequence(emptyList()))

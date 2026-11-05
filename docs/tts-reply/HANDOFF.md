@@ -98,7 +98,7 @@ Hold & Talk の Webhook 設定（`http://192.168.0.111:8765/webhook`）は残っ
 
 ## 6. 今日分かったこと・直したこと
 
-- **リングは長押し中の誤検出の短押しを報告する**（`long short short …`）。前はどの押し方にも当たらず Index agent に回っていた。録音の振り分けでは、最後の長押しより後の短押しを無視する（`RingGesture.forRecordingSequence`）。短押しは、それぞれ0.001秒ほどの別の録音としても届く。
+- **リングは長押し中の誤検出の押し方を報告する**（`long short short …`、`long long long`）。前はどの押し方にも当たらず Index agent に回っていた。録音の振り分けでは、最初の長押しより後の押し方を無視する（`RingGesture.forRecordingSequence`）。短押しは、それぞれ0.001秒ほどの別の録音としても届く。
 - `ExperimentalDevices` の部品が Koin の `singleOf` の上限（22個）を超えたので、`single { ExperimentalDevices(get(), …) }` で登録している。部品を足したら `get()` の数も足す。
 - Haversine のソースは非公開（GitHub `coredevices/haversine-kmp` は 404、Maven Central の sources.jar は空）。API は `javap`（Android の aar）と `klib dump-metadata`（iOS）で読める。
 

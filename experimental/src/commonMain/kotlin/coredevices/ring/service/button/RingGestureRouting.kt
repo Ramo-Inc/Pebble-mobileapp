@@ -19,9 +19,9 @@ enum class RingGesture(val sequence: List<ButtonPress>, val kind: GestureKind) {
         fun forSequence(sequence: List<ButtonPress>): RingGesture? =
             entries.firstOrNull { it.sequence == sequence }
 
-        /** The ring can report clicks while the button is still held, after the final long press. */
+        /** Presses after the first long one come in while the ring is recording, so they don't pick the gesture. */
         fun forRecordingSequence(sequence: List<ButtonPress>): RingGesture? =
-            forSequence(sequence.subList(0, sequence.lastIndexOf(ButtonPress.Long) + 1))
+            forSequence(sequence.subList(0, sequence.indexOf(ButtonPress.Long) + 1))
                 ?.takeIf { it.kind == GestureKind.Recording }
     }
 }
