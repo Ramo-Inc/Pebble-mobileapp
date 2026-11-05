@@ -182,6 +182,21 @@ class GeminiLiveSessionTest {
         connector.connections.single().incoming.close()
         assertFailsWith<GeminiLiveException> { session.respond(byteArrayOf(0, 0), 16000) { _, _ -> } }
     }
+
+    @Test
+    fun replyThatNeverEndsIsCutOffAndClosed() = runTest {
+        val connector = FakeConnector(mutableListOf(listOf(SETUP_COMPLETE, content(byteArrayOf(1, 0)))))
+        val session = GeminiLiveSession.open(connector, "KEY", emptyList())
+        assertFailsWith<GeminiLiveException> { session.respond(byteArrayOf(0, 0), 16000) { _, _ -> } }
+        assertTrue(connector.connections.single().closed)
+    }
+
+    @Test
+    fun setupThatNeverCompletesIsCutOffAndClosed() = runTest {
+        val connector = FakeConnector(mutableListOf(emptyList()))
+        assertFailsWith<GeminiLiveException> { GeminiLiveSession.open(connector, "KEY", emptyList()) }
+        assertTrue(connector.connections.single().closed)
+    }
 }
 
 class GeminiLiveRouteTest {

@@ -15,6 +15,8 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.channels.produce
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.Duration.Companion.minutes
 
 /** A text-message pipe to the Live API; the Ktor WebSocket in the app, a fake in tests. */
 interface GeminiLiveConnection {
@@ -73,24 +75,33 @@ class GeminiLiveSession private constructor(private val connection: GeminiLiveCo
 
     companion object {
         private const val AUDIO_CHUNK_SECONDS = 1
+        private val MAX_WAIT = 2.minutes
 
         /** Connects and sends the setup; returns once the server has accepted it. */
         suspend fun open(connector: GeminiLiveConnector, apiKey: String, history: List<GeminiTurn>): GeminiLiveSession {
             val connection = connector.connect(apiKey)
             try {
                 connection.send(GeminiLiveProtocol.setup(history))
-                while (true) {
-                    when (val event = connection.nextEvent()) {
-                        GeminiServerEvent.SetupComplete -> return GeminiLiveSession(connection)
-                        is GeminiServerEvent.Error -> throw GeminiLiveException(event.message)
-                        else -> Unit
-                    }
-                }
+                return withinMaxWait("setup") { connection.awaitSetup() }
             } catch (e: Throwable) {
                 connection.close()
                 throw e
             }
         }
+
+        private suspend fun GeminiLiveConnection.awaitSetup(): GeminiLiveSession {
+            while (true) {
+                when (val event = nextEvent()) {
+                    GeminiServerEvent.SetupComplete -> return GeminiLiveSession(this)
+                    is GeminiServerEvent.Error -> throw GeminiLiveException(event.message)
+                    else -> Unit
+                }
+            }
+        }
+
+        /** Bounds how long a session stays open when Gemini never answers or never ends its turn. */
+        private suspend fun <T : Any> withinMaxWait(stage: String, block: suspend () -> T): T =
+            withTimeoutOrNull(MAX_WAIT) { block() } ?: throw GeminiLiveException("Gemini did not finish the $stage within $MAX_WAIT")
 
         private suspend fun GeminiLiveConnection.nextEvent(): GeminiServerEvent? {
             val message = incoming.receiveCatching().getOrNull()
@@ -108,36 +119,40 @@ class GeminiLiveSession private constructor(private val connection: GeminiLiveCo
                 connection.send(GeminiLiveProtocol.audio(pcm.copyOfRange(start, minOf(start + chunkBytes, pcm.size)), sampleRate))
             }
             connection.send(GeminiLiveProtocol.activityEnd())
-            val userText = StringBuilder()
-            val replyText = StringBuilder()
-            val audio = mutableListOf<ByteArray>()
-            var rate = GeminiLiveProtocol.OUTPUT_SAMPLE_RATE
-            while (true) {
-                when (val event = connection.nextEvent()) {
-                    is GeminiServerEvent.Error -> throw GeminiLiveException(event.message)
-                    is GeminiServerEvent.Content -> {
-                        userText.append(event.inputText)
-                        replyText.append(event.outputText)
-                        rate = event.sampleRate
-                        for (chunk in event.audio) {
-                            audio += chunk
-                            onAudio(chunk, rate)
-                        }
-                        if (event.turnComplete) {
-                            val all = ByteArray(audio.sumOf { it.size })
-                            var offset = 0
-                            for (chunk in audio) {
-                                chunk.copyInto(all, offset)
-                                offset += chunk.size
-                            }
-                            return GeminiReply(userText.toString().trim(), replyText.toString().trim(), all, rate)
-                        }
-                    }
-                    else -> Unit
-                }
-            }
+            return withinMaxWait("reply") { receiveReply(onAudio) }
         } finally {
             close()
+        }
+    }
+
+    private suspend fun receiveReply(onAudio: suspend (ByteArray, Int) -> Unit): GeminiReply {
+        val userText = StringBuilder()
+        val replyText = StringBuilder()
+        val audio = mutableListOf<ByteArray>()
+        var rate = GeminiLiveProtocol.OUTPUT_SAMPLE_RATE
+        while (true) {
+            when (val event = connection.nextEvent()) {
+                is GeminiServerEvent.Error -> throw GeminiLiveException(event.message)
+                is GeminiServerEvent.Content -> {
+                    userText.append(event.inputText)
+                    replyText.append(event.outputText)
+                    rate = event.sampleRate
+                    for (chunk in event.audio) {
+                        audio += chunk
+                        onAudio(chunk, rate)
+                    }
+                    if (event.turnComplete) {
+                        val all = ByteArray(audio.sumOf { it.size })
+                        var offset = 0
+                        for (chunk in audio) {
+                            chunk.copyInto(all, offset)
+                            offset += chunk.size
+                        }
+                        return GeminiReply(userText.toString().trim(), replyText.toString().trim(), all, rate)
+                    }
+                }
+                else -> Unit
+            }
         }
     }
 
