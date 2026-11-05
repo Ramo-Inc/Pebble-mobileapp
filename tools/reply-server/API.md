@@ -1,7 +1,7 @@
 # 返事サーバー API 仕様書
 
 - 対象：`tools/reply-server/reply_server.py`
-- 利用者：iPhone アプリ（取得側・Webhook 送信側）、エージェント／TTS（登録側・転送の受け取り側。詳しくは [SENDER_SPEC.md](SENDER_SPEC.md)）
+- 利用者：Pebble アプリ（Android・iPhone。取得側・Webhook 送信側）、エージェント／TTS（登録側・転送の受け取り側。詳しくは [SENDER_SPEC.md](SENDER_SPEC.md)）
 
 ## 1. 共通
 
@@ -98,9 +98,9 @@ Authorization: Bearer <トークン>
 - 最初から送り、音声AIが話し終わるまで、できた分をすぐ流す。終わったら接続を閉じる（長さは事前に分からない）。
 - 話し終わったあとも、直近20件のストリームはメモリに残るので取り直せる。サーバーを再起動すると消える（`404`）→ `GET /replies/{id}` の `audio_base64` を使う。
 
-## 5. `POST /webhook` — iPhone の Webhook を受け取り、音声AIで返事する／文字起こしを転送する
+## 5. `POST /webhook` — アプリの Webhook を受け取り、音声AIで返事する／文字起こしを転送する
 
-iPhone アプリの Index Webhook（`experimental/.../indexwebhook/INDEX_WEBHOOK_API.md`、バージョン1）をそのまま受け取る。
+アプリの Index Webhook（`experimental/.../indexwebhook/INDEX_WEBHOOK_API.md`、バージョン1）をそのまま受け取る。
 
 リクエスト（アプリが送るもの）：
 
@@ -159,9 +159,9 @@ Authorization: Bearer <RELAY_TOKEN>      … RELAY_TOKEN が空なら付けな�
 - 返事は `replies.jsonl`（1行に1件のJSON）に保存し、**直近200件**だけ残す。
 - 書き込みは一時ファイル経由で置き換えるので、途中で止まってもファイルは壊れない。
 - サーバーを再起動しても、番号は保存ファイルの続きから振られる。
-- **保存ファイルを消すと番号が1からになり、iPhone に新しい返事が届かなくなる**。直し方は [README.md](README.md) の「困ったとき」を参照。
+- **保存ファイルを消すと番号が1からになり、アプリに新しい返事が届かなくなる**。直し方は [README.md](README.md) の「困ったとき」を参照。
 
-## 7. iPhone アプリ側の決まり（参考）
+## 7. アプリ側の決まり（参考。`experimental/.../replyaudio/ReplyAudioService.kt`）
 
 | 項目 | 決まり |
 |---|---|

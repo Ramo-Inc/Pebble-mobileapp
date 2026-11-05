@@ -1,122 +1,73 @@
-# 引き継ぎ：リングの音声会話（2026-11-05 夜の時点）
+# 引き継ぎ（2026-11-05 夜）
 
-この文書が**今の状態の唯一の正本**です。ほかの `docs/tts-reply/*.md` は、それぞれの作成日時点の設計記録です（冒頭に注記あり）。食い違ったら、この文書とコードを信じてください。
+次のセッションは、まずこの文書と [ARCHITECTURE.md](ARCHITECTURE.md)（どの機能がどこにあるか）を読んでください。手順は [BUILD_AND_TEST.md](BUILD_AND_TEST.md)。食い違ったら、コードとこの文書を信じてください。
 
 ## 0. ユーザーとのやり取りのルール（最重要）
 
-- **返答は必ず日本語。** 長いツール出力のあとも日本語。
-- **推測を事実のように言わない。** 言う前にログ・コード・ライブラリの中身で確かめる。「できない」と言う前に、依存ライブラリの公開 API まで調べる（今日、確かめずに「Haversine は途中の音声を出さない」と言って誤りだった）。
-- **呼び名を混ぜない。** 「Gemini」が2種類あるので、必ず §1 の名前（**Mac 経由の Gemini** ／ **アプリ内 Gemini**）で呼ぶ。
+- **返答は必ず日本語。** 長いツール出力のあとも日本語。結論を先に。
+- **推測を事実のように言わない。** ログ・コード・依存ライブラリの中身で確かめてから言う。「できない」と言う前に、ライブラリの公開 API まで調べる。今日は確かめずに「Haversine は途中の音声を出さない」と言い、誤りだった（実際は公開項目を包めば取れた）。
+- **呼び名を混ぜない。** 「Gemini」は2種類ある。必ず **アプリ内 Gemini**（ボタンの行き先「Gemini Live」）と **Mac 経由の Gemini**（Webhook の Recording only）で呼び分ける。今日はこれを混ぜて、ユーザーを混乱させた。
+- **頼まれたものを作る。** 代わりの案を出すのは、作れない理由を確かめた後。スマホのマイクで話す案は「リングの意味がない」と却下済み。
 - 細かい実装判断は聞かずに決めて伝える。聞くのは作るものが変わる判断だけ。
 - 長い作業の途中でも、数分おきに一言で今していることを伝える（黙ると「止まっている」と思われる）。
-- キー・トークンの値は画面・ログ・コミットに出さない。
+- キー・トークンの値は画面・ログ・コミットに出さない。端末の設定ファイルを読むときは、必要な行だけを grep する（今日は `reply_audio_token` の値を作業ログに出してしまった。ユーザーには伝え済み）。
 
-## 1. 3つの経路
+## 1. 今の状態
 
-リングで話した録音は、**ボタンの押し方ごとの「行き先」**（アプリのボタン設定 `ButtonSwitchboard`）と、その押し方の **Webhook 設定**で、次のどれかに行く。
-
-| 呼び名 | 選び方 | 流れ | Mac で要るもの | 実測（ボタンを離す→鳴り始め） |
-|---|---|---|---|---|
-| **アプリ内 Gemini** | 行き先を **Gemini Live** にする（アプリに Gemini の API キーを保存） | リング → スマホ ──WebSocket──▶ Gemini Live → スマホで流しながら再生 | なし | **3.6〜5.3秒**（Android、区切りを流し込む方式） |
-| **Mac 経由の Gemini** | 行き先は Gemini Live 以外。Webhook の「送る内容」を **Recording only**（または Both） | リング → スマホ → Webhook → 返事サーバー → Gemini Live → 返事サーバー → スマホが1秒ごとに取得して流しながら再生 | 返事サーバー（`.env` に `GEMINI_API_KEY`） | 6.5〜7.3秒 |
-| **秘書** | Webhook の「送る内容」を **Transcription only** | リング → スマホ（端末内で文字起こし）→ Webhook → 返事サーバー → pebble-ring（Jev で相づち・聞き返し）→ 秘書（Claude Code）→ pebble-ring（Haiku で要約・AivisSpeech で音声化）→ 返事サーバー → スマホ | 返事サーバー・pebble-ring・Catchball・秘書セッション・AivisSpeech | 相づちは数秒、本番の返事は秘書しだい（数十秒） |
-
-- ボタン設定の表示名「**Gemini Live**」は、**アプリ内 Gemini** のこと。
-- 行き先が Gemini Live の押し方には Webhook を被せない（`IndexWebhookConfig.sendsFor` で除外）。その押し方の Webhook 設定は残っていても使われない。
-- どちらの Gemini にも**道具（検索など）も時計もつながっていない**。「今何時」は間違える（実例：16:24 に「午前8時24分」）。調べものは秘書の経路で。
-
-### 今の設定（2026-11-05 夜）
-
-| 押し方 | 行き先 | 結果 |
-|---|---|---|
-| Hold & Talk（長押し） | Gemini Live | アプリ内 Gemini |
-| Double click & hold | Web search | 端末内の検索エージェント（Mac は使わない） |
-
-Hold & Talk の Webhook 設定（`http://192.168.0.111:8765/webhook`）は残っているが、上の理由で使われない。秘書や Mac 経由の Gemini を使うときは、使う押し方の行き先を Gemini Live 以外にして、Webhook の送る内容を選ぶ。
-
-## 2. アプリ内 Gemini のしくみ
-
-コード：`experimental/src/commonMain/kotlin/coredevices/ring/external/geminilive/`（設計の経緯は `CLIENT_GEMINI_LIVE_DESIGN.md`）
-
-1. **区切りの横取り**（`RingAudioTap`）：リングのライブラリ（Haversine）の公開項目 `environment.transferDelegate`（Android は `KMPHaversineSatelliteManager.environment`、iOS は `.wrap.environment()`）を包み、元の処理を先に呼んでから、区切りの生データを受け取る。`PPCollection(番号, データ).audioTimeline` で音声に戻す（約 10 kHz・16bit）。リングの録音・転送・前処理・文字起こしのコードは変えていない。
-2. **流し込み**（`GeminiLiveStreamer` → `GeminiLiveResponder.respondToParts`）：最初の区切りで Gemini のセッションを取り、区切りが届くたびにそのままのレートで送る。最後の区切りに押し方が入っているので、そこで行き先が Gemini Live なら「話し終わり」を送り、返事を流しながら再生する。違えば返事を作らせずに切る。1秒未満の録音（ボタン操作）は送らない。
-3. **後始末**：録音処理の順番待ちが `GeminiLiveRecordingOperation` を動かすと、転送の開始番号で流し込み済みの返事を探し、答え済みなら何もしない。流し込みが答えられなかったとき（途中の区切りが欠けた等）だけ、保存済みの録音で答え直す。
-4. **事前接続**：リングの転送が始まった時点で Gemini に接続・初期設定を済ませておく（`GeminiLiveSessionManager`、使われなければ30秒で閉じる）。
-5. **会話履歴**：直近20往復をアプリに保存して、毎回のセッションの初期設定に入れる。ボタン設定の Gemini Live の下で「会話をリセット」できる。返事は Index タブの Replies に、自分の発話と一緒に残る。
-
-### 遅延の内訳（Android 実測、17:38）
-
-| 区間 | 1回目（録音2.2秒） | 2回目（録音3.4秒） |
-|---|---|---|
-| 離す → リングが送り始める | 1.8秒 | 0.9秒 |
-| リングが全区切りを送る | 1.5秒 | 1.7秒 |
-| 最後の区切り → Gemini に「話し終わり」 | 0.02秒 | 0.02秒 |
-| Gemini → 最初の音声 | 1.9秒 | 1.05秒 |
-| 合計 | 5.3秒 | 3.6秒 |
-
-- リングは、つながっていれば押している間から区切りを送る（17:09 の回）。つながっていなければ、離してからつないでまとめて送る（17:38 の2回）。ここはリングとライブラリの動きで、アプリからは変えられない。
-- 全部そろってから送っていた前の方式は 6.0〜6.7秒だった。
-
-## 3. 課金の安全策（接続が残らないように）
-
-| 経路 | 仕組み |
+| もの | 状態 |
 |---|---|
-| アプリ内 Gemini | 録音1件ごとに1セッション。返事が終わったら切る。初期設定と返事待ちはそれぞれ最長2分、流し込み中は区切りが30秒来なければ切る。事前接続は30秒使われなければ切る。自動のやり直しなし |
-| Mac 経由の Gemini | 録音1件ごとに1接続。返事が終わったら切る。最長2分で打ち切り（`MAX_SESSION_SECONDS`）、無通信60秒でも切る。自動のやり直しなし。実測で返事の後の接続は0本 |
+| コード | すべて `master` に push 済み（機能は `a99d8c1e` まで。その後はドキュメントの整理） |
+| Android（moto g24、USB 接続） | 最新の debug ビルドを入れてある。**Hold & Talk → Gemini Live（アプリ内 Gemini）**、Double click & hold → Web search。アプリに Gemini の API キーを保存済み |
+| iPhone | 今日の変更（アプリ内 Gemini・流し込み）は**入っていない**。コンパイルが通ることだけ確認 |
+| Mac | 返事サーバー・pebble-ring・Catchball が常駐。Mac 経由の Gemini は有効（`Voice replies: gemini-3.8-live`）。秘書は必要なときに `secretary.sh` で起動 |
+| リング | Android とペアリング済み。ファームウェア 3.86.0 |
 
-- 流し込みは、押し方が最後の区切りまで分からないので、**どれかの押し方が Gemini Live のとき、1秒以上の録音はいったん全部 Gemini に送る**。行き先が違えば返事は作らせないので、かかるのは送った音声の分だけ。
+実測（ボタンを離す→鳴り始め）：アプリ内 Gemini 3.6〜5.3秒、Mac 経由の Gemini 6.5〜7.3秒。内訳と理由は [CLIENT_GEMINI_LIVE_DESIGN.md](CLIENT_GEMINI_LIVE_DESIGN.md) §4。
 
-## 4. 端末の状態
+## 2. ユーザーの返事待ち
 
-### Android（moto g24、USB で Mac mini に接続、`adb` は `~/Library/Android/sdk/platform-tools/adb`）
+**リングのファームウェア更新をどうするか。**
 
-- debug ビルドを `./gradlew :androidApp:assembleDebug` → `adb install -r androidApp/build/outputs/apk/debug/androidApp-debug.apk` で入れている（最新 master `be6e54a8` 相当）。
-- 文字起こしは端末内の Google 音声認識（`PlatformSpeechRecognizer.android.kt`）。
-- アプリの記録：`adb logcat -v time`。タグ `RingAudioTap`（区切り）、`GeminiLive`（送信・最初の音声・返事）、`RingSync`（転送）。
-- 「Firestore にアップロードできない（未ログイン）」のエラーが繰り返し出るが、ダミー Firebase のためで無害。
+- 更新の確認には Pebble のアカウントへのログインが要る（`util/src/commonMain/kotlin/coredevices/api/EngDashOtaApi.kt` → `dash.repebble.com/api/ota/latest`、Firebase 認証）。自前ビルドはダミーの Firebase なのでログインできず、毎回 `401`。公式アプリの設定を抜き出して使うのは、なりすましになるのでやらない（ユーザーにもそう説明済み）。
+- 提案した2案：
+  - **A**（おすすめ）：Android の自前アプリを消す → Play ストアの公式「Pebble」でログイン・ペアリング・更新 → 公式を消して自前を入れ直し、ペアリングと設定（行き先、API キー）を戻す。公式と自前は同じアプリ ID `coredevices.coreapp` なので共存できない。
+  - **B**：iPhone に App Store の「Pebble Core」を足す（自前は `com.ramo.coreapp` なので共存できる）→ リングをリセットして iPhone で更新 → リセットして Android にペアリングし直す。
+- A で進める場合は、消す前に設定を控える。adb で戻せるもの：アプリの入れ直し、行き先の選択、API キーの入力（画面を adb で操作し、値は `~/.zshrc` の `GEMINI_API_KEY` から表示せずに入れる）。
+- リングのリセットは「SOS」の押し方（短く3回・長く3回・短く3回）。
 
-### iPhone
+## 3. 残っている課題
 
-- 今日の変更（アプリ内 Gemini・流し込み）は iOS 用にコンパイルが通ることまで確認。**実機には入れていない。**
-- 入れるとき：普通のターミナルで `~/Projects/Pebble-mobileapp/tools/mac-build/ios-build-install.sh`（エージェントのシェルは署名できない）。
-- iOS はバックグラウンドのアプリを一時停止するので、画面を閉じている間の Mac からの返事が遅れる問題は未解決（`WAKE_WITHOUT_PUSH_RESEARCH.md`）。アプリ内 Gemini はリングの通信でアプリが起きている間に完結するので、この影響を受けにくい見込み（未確認）。
+1. **リングの長押しの反応が悪い**（ユーザーの不満）。2026-11-05 の17回中10回で、長押しの最中に余分な押し方が記録された。アプリ側は吸収済み（最初の長押しで判定）。公式の説明に強さの指定はなく、「同じ力で押さえ続ける」と案内した（記録からの推測）。新しいファームウェアで直るかは §2 しだい。
+2. **iPhone 実機でのアプリ内 Gemini の確認**（[BUILD_AND_TEST.md](BUILD_AND_TEST.md) §5 の G7）。iOS の差し込み（`RingAudioTap.ios.kt`）は、ObjC の弱参照を避けるため包んだ物を強く持っている。
+3. **Gemini に時計も検索もない。** 「今何時」を間違える。指示文に今の時刻を入れるのは簡単にできる（ユーザーにはまだ聞いていない）。
+4. **流し込みは前処理を通さない。** 聞き取りの精度を引き続き見る。
+5. **画面を閉じた iPhone で、Mac からの返事がすぐ鳴らない**（iOS のアプリ一時停止）。調査は [WAKE_WITHOUT_PUSH_RESEARCH.md](WAKE_WITHOUT_PUSH_RESEARCH.md)。無料 Apple ID ではプッシュ通知が使えない。Android では起きない。
+6. 返事ログに、秘書経路の相づち・聞き返しも並ぶ。隠すかはユーザー未回答。
 
-## 5. Mac の常駐サービス（launchd）
+## 4. 守ること
 
-| サービス | アドレス | ログ | 使う経路 |
-|---|---|---|---|
-| 返事サーバー `com.ramo.reply-server` | `0.0.0.0:8765` | `~/Library/Logs/reply-server.log` | Mac 経由の Gemini・秘書 |
-| pebble-ring `com.ramo.pebble-ring` | `127.0.0.1:8766` | `~/Library/Logs/pebble-ring.log` | 秘書 |
-| Catchball `com.ramo.catchball` | `127.0.0.1:47821`（WebUI `:47822`） | `~/Library/Logs/catchball.log` | 秘書 |
+- **リングの録音・転送・前処理・文字起こしのコードは変えない**（`CLAUDE.md`）。足すときは外側に足す（今日の `RingAudioTap` のように、ライブラリの公開項目を包んで元の処理を先に呼ぶ）。
+- **Android と iPhone の両方で動かす**（`CLAUDE.md`）。片方でできないときは、作る前にユーザーに言う。
+- 修正は `master` から作業ブランチを切り、テストを通してから `master` に fast-forward で入れて push。`iosApp/Podfile.lock`（手元のビルド用）と `cactus-native/.cxx/`（ビルドの残り）はコミットしない。
+- `~/.claude*` と `~/.codex/config.toml` はエージェントから変えられない。署名（codesign）もできない。要るときは、普通のターミナルで実行してもらうコマンドを渡す。
+- 返事サーバーの `replies.jsonl` を消さない（番号が戻り、アプリに返事が届かなくなる）。
+- 依存ライブラリ（Haversine など）のソースは非公開。API は Android の aar を `javap -p -c`、iOS の klib を `~/.konan/kotlin-native-prebuilt-*/bin/klib dump-metadata` で読める（`~/.gradle/caches/modules-2/files-2.1/io.github.coredevices.haversine/`）。
 
-- 再起動：`launchctl kickstart -k gui/$(id -u)/com.ramo.<名前>`。launchd は `~/.zshrc` を読まないので、キーは各 `.env` に書く。
-- 秘書の起動：普通のターミナルで `~/Projects/Pebble-mobileapp/tools/skill/pebble-ring/secretary.sh`（Codex は末尾に ` codex`）。
-- 設定ファイル（git に入らない。値はここに書かない）
-  - `tools/reply-server/.env`：`REPLY_TOKEN`、`RELAY_URL=http://127.0.0.1:8766/stt`、`RELAY_TOKEN`、`GEMINI_API_KEY`
-  - `tools/skill/pebble-ring/.env`：`PEBBLE_RING_TOKEN`、`REPLY_TOKEN`、`SUMMARY_*`（`claude-haiku-5-5`、effort medium、max_tokens 4000）、`TTS_URL`、`PEBBLE_JEV_API_KEY`
-- Mac 経由の Gemini の会話履歴は `tools/reply-server/conversation.jsonl`（消す：`python3 tools/reply-server/reply_server.py clear-history`）。アプリ内 Gemini の履歴とは別。
+## 5. 今日やったこと（詳しくはコミット）
 
-## 6. 今日分かったこと・直したこと
+`git log --oneline 663583f6..master`。要点：
 
-- **リングは長押し中の誤検出の押し方を報告する**（`long short short …`、`long long long`）。前はどの押し方にも当たらず Index agent に回っていた。録音の振り分けでは、最初の長押しより後の押し方を無視する（`RingGesture.forRecordingSequence`）。短押しは、それぞれ0.001秒ほどの別の録音としても届く。
-- `ExperimentalDevices` の部品が Koin の `singleOf` の上限（22個）を超えたので、`single { ExperimentalDevices(get(), …) }` で登録している。部品を足したら `get()` の数も足す。
-- Haversine のソースは非公開（GitHub `coredevices/haversine-kmp` は 404、Maven Central の sources.jar は空）。API は `javap`（Android の aar）と `klib dump-metadata`（iOS）で読める。
+- Mac 経由の Gemini を有効化（`.env` に `GEMINI_API_KEY`）し、1回の接続に2分の上限（`bda78a7b`）。
+- アプリ内 Gemini を使えるようにした：ビルド修正（`07e3f392`）、テスト修正（`729dfeb5`）、接続の上限（`9a893ffc`）、押し方の誤検出の吸収（`411f0dfd`・`a99d8c1e`）。
+- リングの区切りを Gemini に流し込む（`be6e54a8`）。6.0〜6.7秒 → 3.6〜5.3秒。
+- ドキュメントの全面書き直し（この文書、`ARCHITECTURE.md`、`BUILD_AND_TEST.md`、`CLIENT_GEMINI_LIVE_DESIGN.md`、返事サーバーの説明書）。古い `DESIGN.md`・`FEED_REPLIES_PLAN.md`・`MAC_BUILD_AND_TEST.md` は `ARCHITECTURE.md`・`BUILD_AND_TEST.md` に吸収した（git の履歴には残っている）。
 
-## 7. 残っている課題
+## 6. おすすめのスキル
 
-1. iPhone 実機でのアプリ内 Gemini の確認。
-2. Gemini に時刻（と必要なら検索）を渡すか。今は指示文だけ。
-3. 流し込みでは前処理（雑音除去・音量4倍前後）を通さない。聞き取りの精度が落ちていないかを見る（流し込みで試した2回は、返事が発話の内容に合っていた）。
-4. 返事サーバーの `replies.jsonl` を消すと番号が1に戻り、スマホに新しい返事が届かなくなる（直し方は `tools/reply-server/README.md`）。
-
-## 8. 関連資料
-
-| 内容 | 場所 |
+| スキル | 使う場面 |
 |---|---|
-| アプリ内 Gemini の設計 | `docs/tts-reply/CLIENT_GEMINI_LIVE_DESIGN.md` |
-| 返事の再生（Reply audio）の最初の設計 | `docs/tts-reply/DESIGN.md`、`FEED_REPLIES_PLAN.md`、`MAC_BUILD_AND_TEST.md` |
-| iOS をプッシュなしで起こす方法の調査 | `docs/tts-reply/WAKE_WITHOUT_PUSH_RESEARCH.md` |
-| 返事サーバー（Mac 経由の Gemini・転送） | `tools/reply-server/README.md`・`API.md`・`SENDER_SPEC.md` |
-| pebble-ring・秘書 | `tools/skill/pebble-ring/README.md`・`SKILL.md`・`SECRETARY.md` |
-| アプリの Webhook 仕様 | `experimental/src/commonMain/kotlin/coredevices/ring/external/indexwebhook/INDEX_WEBHOOK_API.md` |
-| テスト | `./gradlew :experimental:testAndroidHostTest --tests 'coredevices.ring.external.geminilive.*'`（`replyaudio.*`・`indexwebhook.*`・`coredevices.ring.service.button.*` も）、`python3 -m unittest discover tools/reply-server`、`python3 -m unittest discover tools/skill/pebble-ring` |
+| `diagnosing-bugs` | 「返事が来ない」「途中で切れた」。まず adb の記録で `RingAudioTap`・`GeminiLive`・`Debounced gesture` の時刻を並べる |
+| `tdd` | アプリ内 Gemini や押し方の判定を変えるとき（`GeminiLiveTest.kt`、`GestureRoutingTest.kt`） |
+| `research` | リングのファームウェアや Gemini Live API の仕様を調べるとき。Pebble 公式の更新履歴は Notion で、`https://ndocs.repebble.com/api/v3/` の公開 API から JSON で読める |
+| `code-review` | まとまった変更を master に入れる前 |
+| `claude-api` | pebble-ring の要約（Claude Haiku）を触るとき |

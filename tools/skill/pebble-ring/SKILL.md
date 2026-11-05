@@ -8,11 +8,11 @@ description: Operate pebble-ring, the user's voice contact point in a Catchball 
 `pebble-ring` is a virtual agent in a Catchball (session-mail) room. It is **the user's contact point**:
 
 - Messages it sends are what the user said into the Index 01 ring (transcribed, may contain recognition mistakes).
-- Anything sent to `pebble-ring` reaches the user: the full text appears on the iPhone and a 2-3 sentence summary is read aloud.
+- Anything sent to `pebble-ring` reaches the user: the full text appears in the phone app's reply log and a spoken summary, as long as the content needs, is read aloud.
 
 ```text
-ring → iPhone (STT) → reply server /webhook → pebble-ring /stt → Catchball → secretary (main)
-secretary → channel_send to pebble-ring → summary + TTS → reply server /replies → iPhone plays it
+ring → phone (STT) → reply server /webhook → pebble-ring /stt → Catchball → secretary (main)
+secretary → channel_send to pebble-ring → summary + TTS → reply server /replies → the phone app plays it
 ```
 
 Code and settings: `tools/skill/pebble-ring/` (`pebble_ring.py`, `.env`). Details: `README.md` in the same folder.
