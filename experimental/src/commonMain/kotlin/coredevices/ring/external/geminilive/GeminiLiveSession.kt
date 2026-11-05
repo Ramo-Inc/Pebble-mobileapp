@@ -113,11 +113,28 @@ class GeminiLiveSession private constructor(private val connection: GeminiLiveCo
     /** Sends [pcm] (16-bit mono at [sampleRate]) and returns the reply; [onAudio] gets each chunk as it arrives. */
     suspend fun respond(pcm: ByteArray, sampleRate: Int, onAudio: suspend (ByteArray, Int) -> Unit): GeminiReply {
         try {
-            connection.send(GeminiLiveProtocol.activityStart())
-            val chunkBytes = sampleRate * 2 * AUDIO_CHUNK_SECONDS
-            for (start in pcm.indices step chunkBytes) {
-                connection.send(GeminiLiveProtocol.audio(pcm.copyOfRange(start, minOf(start + chunkBytes, pcm.size)), sampleRate))
-            }
+            beginUtterance()
+            sendAudio(pcm, sampleRate)
+        } catch (e: Throwable) {
+            close()
+            throw e
+        }
+        return endUtterance(onAudio)
+    }
+
+    suspend fun beginUtterance() = connection.send(GeminiLiveProtocol.activityStart())
+
+    /** Sends more of the utterance (16-bit mono at [sampleRate]); can be called as the audio arrives. */
+    suspend fun sendAudio(pcm: ByteArray, sampleRate: Int) {
+        val chunkBytes = sampleRate * 2 * AUDIO_CHUNK_SECONDS
+        for (start in pcm.indices step chunkBytes) {
+            connection.send(GeminiLiveProtocol.audio(pcm.copyOfRange(start, minOf(start + chunkBytes, pcm.size)), sampleRate))
+        }
+    }
+
+    /** Marks the utterance as finished and returns the reply, closing the session either way. */
+    suspend fun endUtterance(onAudio: suspend (ByteArray, Int) -> Unit): GeminiReply {
+        try {
             connection.send(GeminiLiveProtocol.activityEnd())
             return withinMaxWait("reply") { receiveReply(onAudio) }
         } finally {

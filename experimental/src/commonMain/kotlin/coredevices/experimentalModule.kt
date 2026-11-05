@@ -82,7 +82,9 @@ import coredevices.ring.external.geminilive.GeminiLiveConnector
 import coredevices.ring.external.geminilive.GeminiLiveKeyStorage
 import coredevices.ring.external.geminilive.GeminiLiveResponder
 import coredevices.ring.external.geminilive.GeminiLiveSessionManager
+import coredevices.ring.external.geminilive.GeminiLiveStreamer
 import coredevices.ring.external.geminilive.KtorGeminiLiveConnector
+import coredevices.ring.external.geminilive.RingAudioTap
 import coredevices.ring.external.geminilive.readPcm
 import coredevices.ring.external.replyaudio.ReplyStreamPlayer
 import coredevices.ring.external.replyaudio.createReplyStreamPlayer
@@ -296,6 +298,8 @@ val experimentalModule = module {
     }
     singleOf(::GeminiConversationHistory)
     singleOf(::GeminiLiveKeyStorage)
+    singleOf(::RingAudioTap)
+    singleOf(::GeminiLiveStreamer)
     single { GeminiLiveSessionManager(get(), get(), get(), get(), get()) }
     single {
         val storage = get<RecordingStorage>()
@@ -316,7 +320,7 @@ val experimentalModule = module {
     singleOf(::IndexSettingsSummary)
     singleOf(::IndexRebootLogStore)
     single { RingRssiStatistics(get()) } bind HeartbeatMetricsSource::class
-    single { ExperimentalDevices(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
+    single { ExperimentalDevices(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
     single { TargetCalendarSeeder(get(), get<LibPebble>(), get()) }
     singleOf(::PrefsCollectionIndexStorage) bind CollectionIndexStorage::class
     factory { HackyPermissionRequesterProvider { get<PermissionRequester>() } }

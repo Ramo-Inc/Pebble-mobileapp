@@ -209,7 +209,7 @@ class RecordingOperationFactory(
                     )
                 }
             }
-            GestureDestination.GeminiLive -> GeminiLiveRecordingOperation(fileId)
+            GestureDestination.GeminiLive -> GeminiLiveRecordingOperation(fileId, transferId)
             // maybeWrapWithWebhook layers the webhook send on top of this no-op.
             GestureDestination.WebhookOnly, GestureDestination.Nothing -> NoAgentRecordingOperation
         }

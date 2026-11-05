@@ -15,6 +15,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.io.buffered
 import kotlinx.io.readByteArray
 import kotlin.time.Clock
@@ -104,6 +106,8 @@ class GeminiLiveSessionManager(
 }
 
 /** One spoken exchange: send the recording to Gemini, play the reply as it streams in, then log it. */
+private val PART_TIMEOUT = 30.seconds
+
 class GeminiLiveResponder(
     private val sessions: GeminiLiveSessionManager,
     private val keyStorage: GeminiLiveKeyStorage,
@@ -129,7 +133,7 @@ class GeminiLiveResponder(
             playbackLock.mutex.withLock {
                 val session = sessions.take(apiKey)
                 logger.i { "Recording $fileId sent to Gemini (${pcm.size} bytes)" }
-                streamAndPlay(session, pcm, sampleRate)
+                playReply { onAudio -> session.respond(pcm, sampleRate, onAudio) }
             }
         } catch (e: CancellationException) {
             throw e
@@ -138,17 +142,88 @@ class GeminiLiveResponder(
             replyLog.addLocal(userText = null, text = "Gemini Live で返事を作れませんでした（${e.message}）", audio = null, at = clock.now())
             return
         }
-        logger.i { "Gemini reply for $fileId: ${reply.replyText.take(60)}" }
+        record(fileId, reply)
+    }
+
+    /**
+     * Sends one recording's [parts] to Gemini while the ring is still sending them, and answers once
+     * the final part shows its gesture [routesHere]. Returns false when it did not answer, so the
+     * stored recording can be answered instead.
+     */
+    suspend fun respondToParts(parts: ReceiveChannel<RingAudioPart>, routesHere: (RingAudioPart) -> Boolean): Boolean {
+        val apiKey = keyStorage.get() ?: return false
+        var session: GeminiLiveSession? = null
+        val last = try {
+            sessions.take(apiKey).also { session = it }.let { streamParts(it, parts) }
+        } catch (e: CancellationException) {
+            session?.close()
+            throw e
+        } catch (e: Exception) {
+            logger.w(e) { "Streaming a recording to Gemini failed" }
+            session?.close()
+            return false
+        }
+        val streamed = session ?: return false
+        if (last == null || last.recordingSeconds < MIN_RECORDING_SECONDS || !routesHere(last.final)) {
+            streamed.close()
+            return false
+        }
+        val label = "recording ${last.collectionStartIndex}"
+        var playing = false
+        val reply = try {
+            playbackLock.mutex.withLock {
+                logger.i { "$label streamed to Gemini, utterance ended" }
+                playReply { onAudio -> streamed.endUtterance { chunk, rate -> playing = true; onAudio(chunk, rate) } }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (!playing) {
+                logger.w(e) { "Gemini failed for streamed $label, answering the stored recording instead" }
+                return false
+            }
+            logger.e(e) { "Gemini Live failed for $label" }
+            replyLog.addLocal(userText = null, text = "Gemini Live で返事を作れませんでした（${e.message}）", audio = null, at = clock.now())
+            return true
+        }
+        record(label, reply)
+        return true
+    }
+
+    private class StreamedRecording(val final: RingAudioPart, val recordingSeconds: Double) {
+        val collectionStartIndex get() = final.collectionStartIndex
+    }
+
+    /** Sends parts in order and returns the recording once its final part is sent; null when the parts stopped before it. */
+    private suspend fun streamParts(session: GeminiLiveSession, parts: ReceiveChannel<RingAudioPart>): StreamedRecording? {
+        session.beginUtterance()
+        var expected: Int? = null
+        var seconds = 0.0
+        while (true) {
+            val part = withTimeoutOrNull(PART_TIMEOUT) { parts.receiveCatching() }
+                ?: throw GeminiLiveException("No audio from the ring for $PART_TIMEOUT")
+            val next = part.getOrNull() ?: return null
+            if (expected != null && next.index != expected) throw GeminiLiveException("Part $expected of recording ${next.collectionStartIndex} is missing")
+            expected = next.index + 1
+            session.sendAudio(next.samples.toPcm16Le(), next.sampleRate)
+            seconds += next.seconds
+            if (next.isFinal) return StreamedRecording(next, seconds)
+        }
+    }
+
+    private suspend fun record(label: String, reply: GeminiReply) {
+        logger.i { "Gemini reply for $label: ${reply.replyText.take(60)}" }
         val wav = reply.audio.takeIf { it.isNotEmpty() }?.let { pcm16MonoToWav(it, reply.sampleRate) }
         replyLog.addLocal(userText = reply.userText, text = reply.replyText, audio = wav, at = clock.now(), played = wav != null)
         history.append(GeminiTurn(reply.userText, reply.replyText))
     }
 
-    private suspend fun streamAndPlay(session: GeminiLiveSession, pcm: ByteArray, sampleRate: Int): GeminiReply = coroutineScope {
+    /** Plays the reply that [exchange] produces as its audio arrives. */
+    private suspend fun playReply(exchange: suspend (onAudio: suspend (ByteArray, Int) -> Unit) -> GeminiReply): GeminiReply = coroutineScope {
         val chunks = Channel<ByteArray>(Channel.UNLIMITED)
         var playback: Job? = null
         val reply = try {
-            session.respond(pcm, sampleRate) { chunk, outputRate ->
+            exchange { chunk, outputRate ->
                 if (playback == null) {
                     logger.i { "First Gemini audio, playback starts" }
                     playback = launch { streamPlayer.playStream(outputRate, chunks) }

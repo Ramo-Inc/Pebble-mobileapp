@@ -345,4 +345,74 @@ class GeminiLiveResponderTest {
 
         assertTrue(connector.connections.isEmpty())
     }
+
+    /** A part of [seconds] of audio, every sample [value]. */
+    private fun part(start: Int, index: Int, value: Short, final: Boolean = false, sequence: String? = null, seconds: Double = 0.6) =
+        RingAudioPart(start, index, ShortArray((8000 * seconds).toInt()) { value }, 8000, final, sequence)
+
+    private fun Channel<RingAudioPart>.sendAll(vararg parts: RingAudioPart) = apply {
+        parts.forEach { trySend(it) }
+        close()
+    }
+
+    private fun sentMessages(connection: FakeConnection) = connection.sent.map { Json.parseToJsonElement(it).jsonObject }
+
+    @Test
+    fun streamedPartsAreSentInOrderAndAnswered() = runTest {
+        tokens.saveToken("gemini_live_api_key", "KEY")
+        val connector = FakeConnector(mutableListOf(replyScript("質問", "答え")))
+        val parts = Channel<RingAudioPart>(Channel.UNLIMITED).sendAll(part(10, 10, 1), part(10, 11, 2, final = true, sequence = "long"))
+
+        assertTrue(responder(connector).respondToParts(parts) { it.buttonSequence == "long" })
+
+        val audio = sentMessages(connector.connections.single()).mapNotNull { it["realtimeInput"]?.jsonObject?.get("audio")?.jsonObject }
+        assertEquals(listOf("audio/pcm;rate=8000", "audio/pcm;rate=8000"), audio.map { it["mimeType"]!!.jsonPrimitive.content })
+        assertEquals(listOf(listOf<Byte>(1, 0), listOf<Byte>(2, 0)), audio.map { Base64.decode(it["data"]!!.jsonPrimitive.content).take(2) })
+        assertEquals("答え", log.entries.value.single().text)
+        assertEquals(listOf(GeminiTurn("質問", "答え")), history.turns.value)
+    }
+
+    @Test
+    fun streamedRecordingRoutedElsewhereIsDroppedWithoutAReply() = runTest {
+        tokens.saveToken("gemini_live_api_key", "KEY")
+        val connector = FakeConnector(mutableListOf(replyScript("質問", "答え")))
+        val parts = Channel<RingAudioPart>(Channel.UNLIMITED).sendAll(part(10, 10, 1, final = true, sequence = "short long", seconds = 2.0))
+
+        assertFalse(responder(connector).respondToParts(parts) { false })
+
+        val connection = connector.connections.single()
+        assertTrue(connection.closed)
+        assertTrue(sentMessages(connection).none { "activityEnd" in (it["realtimeInput"]?.jsonObject ?: return@none false) })
+        assertTrue(log.entries.value.isEmpty())
+    }
+
+    @Test
+    fun missingPartLeavesTheRecordingToTheStoredFile() = runTest {
+        tokens.saveToken("gemini_live_api_key", "KEY")
+        val connector = FakeConnector(mutableListOf(replyScript("質問", "答え")))
+        val parts = Channel<RingAudioPart>(Channel.UNLIMITED).sendAll(part(10, 10, 1), part(10, 12, 2, final = true, sequence = "long"))
+
+        assertFalse(responder(connector).respondToParts(parts) { true })
+        assertTrue(connector.connections.single().closed)
+        assertTrue(log.entries.value.isEmpty())
+    }
+
+    @Test
+    fun streamerAnswersAHoldAndSkipsAClick() = runTest {
+        tokens.saveToken("gemini_live_api_key", "KEY")
+        val connector = FakeConnector(mutableListOf(replyScript("質問", "答え")))
+        val streamer = GeminiLiveStreamer(responder(connector), routing, RecordingBackgroundScope(backgroundScope))
+
+        streamer.onPart(part(20, 20, 0, final = true, sequence = "short"))
+        streamer.onPart(part(10, 10, 1))
+        streamer.onPart(part(10, 11, 2, final = true, sequence = "long short short"))
+        // The ring reports the clicks it registered during the hold as tiny recordings of their own.
+        streamer.onPart(part(12, 12, 0, final = true, sequence = "long short short short", seconds = 0.001))
+
+        assertTrue(streamer.answeredWhileStreaming(10))
+        assertFalse(streamer.answeredWhileStreaming(20))
+        assertFalse(streamer.answeredWhileStreaming(12))
+        assertEquals(1, connector.connections.size)
+        assertEquals("答え", log.entries.value.single().text)
+    }
 }
