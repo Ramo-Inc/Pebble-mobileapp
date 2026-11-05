@@ -47,6 +47,19 @@ class GestureRoutingTest {
     }
 
     @Test
+    fun recordingSequencesIgnoreClicksRegisteredDuringTheHold() {
+        val long = ButtonPress.Long
+        val short = ButtonPress.Short
+        assertEquals(RingGesture.Hold, RingGesture.forRecordingSequence(listOf(long)))
+        assertEquals(RingGesture.Hold, RingGesture.forRecordingSequence(listOf(long) + List(14) { short }))
+        assertEquals(RingGesture.ClickHold, RingGesture.forRecordingSequence(listOf(short, long)))
+        assertEquals(RingGesture.ClickHold, RingGesture.forRecordingSequence(listOf(short, long, short, short)))
+        assertNull(RingGesture.forRecordingSequence(listOf(short, short, long)))
+        assertNull(RingGesture.forRecordingSequence(listOf(short, short)))
+        assertNull(RingGesture.forRecordingSequence(emptyList()))
+    }
+
+    @Test
     fun musicControlModeDisabledMigratesToNothing() {
         val routes = routing(MusicControlMode.Disabled).routes.value
 

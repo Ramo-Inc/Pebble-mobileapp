@@ -48,7 +48,7 @@ class RecordingOperationFactory(
         forcedNoteTool: (suspend (messageText: String, sessionContext: SessionContext) -> ToolCallResult),
         sequence: List<ButtonPress>?
     ): RecordingOperation {
-        val gesture = sequence?.let { RingGesture.forSequence(it) }
+        val gesture = sequence?.let { RingGesture.forRecordingSequence(it) }
         val destination = gestureRouting.recordingDestinationFor(gesture)
         val inner = createForDestination(
             destination = destination,
@@ -147,7 +147,7 @@ class RecordingOperationFactory(
         } else {
             queueTaskRepository.getLatestButtonSequenceForTransfer(transfer.id)
                 ?.parseAsButtonSequence()
-                ?.let { RingGesture.forSequence(it) }
+                ?.let { RingGesture.forRecordingSequence(it) }
         }
         val destination = if (transfer == null && queueTaskRepository.isGestureCommandRecording(recordingId)) {
             GestureDestination.IndexAgent
