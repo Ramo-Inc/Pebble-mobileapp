@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 
-from reply_server import Relay, RelayError, ReplyStore, load_env, make_handler, parse_multipart
+from reply_server import Relay, RelayError, ReplyStore, VoiceResponder, load_env, make_handler, parse_multipart
 
 BOUNDARY = "b0undary"
 
@@ -135,6 +135,43 @@ class WebhookEndpointTest(unittest.TestCase):
 
     def test_requires_the_reply_token(self):
         self.assertEqual(401, self.post(webhook_body(), token="wrong")[0])
+
+
+class WebhookVoiceRoutingTest(WebhookEndpointTest):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.relayed = []
+        self.relay = Relay("http://agent", "tok", send=lambda url, token, payload: self.relayed.append(payload))
+        store = ReplyStore(os.path.join(self.tmp, "replies.jsonl"))
+        self.voice = VoiceResponder(store, live=None, history=None)
+        handler = make_handler(store, "secret", self.relay, self.voice)
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def test_recording_goes_to_voice_not_relay(self):
+        status, body = self.post(webhook_body(transcription=None), **{"X-Index-Delivery": "d1"})
+        self.assertEqual((200, {"status": "voice queued"}), (status, body))
+        queued = self.voice.queue.get_nowait()
+        self.assertEqual((b"\x00\x01\xff", "d1"), (queued["audio"], queued["request_id"]))
+        self.assertEqual(0, self.relay.queue.qsize())
+
+    def test_recording_with_transcription_goes_to_voice_only(self):
+        self.assertEqual("voice queued", self.post(webhook_body(), **{"X-Index-Delivery": "d1"})[1]["status"])
+        self.assertEqual("明日の会議を確認して", self.voice.queue.get_nowait()["text"])
+        self.assertEqual(0, self.relay.queue.qsize())
+
+    def test_transcription_only_still_goes_to_relay(self):
+        self.assertEqual("queued", self.post(webhook_body(with_audio=False), **{"X-Index-Delivery": "d1"})[1]["status"])
+        self.assertEqual(0, self.voice.queue.qsize())
+
+    def test_resent_recording_is_not_queued_again(self):
+        self.post(webhook_body(), **{"X-Index-Delivery": "d1"})
+        self.assertEqual("duplicate", self.post(webhook_body(), **{"X-Index-Delivery": "d1"})[1]["status"])
+
+    # Inherited tests that assume recordings reach the relay do not apply here.
+    test_queues_transcription_for_relay = None
+    test_resent_delivery_is_not_queued_again = None
+    test_ignores_test_events_recordings_without_text_and_button_events = None
 
 
 if __name__ == "__main__":
