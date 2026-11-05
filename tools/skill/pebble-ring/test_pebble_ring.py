@@ -6,7 +6,7 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 
-from pebble_ring import INTRO, SPOKEN_PLAIN_CHARS, ApiError, PebbleRing, Summarizer, make_handler
+from pebble_ring import ACKS_PATH, INTRO, SPOKEN_PLAIN_CHARS, Acknowledger, ApiError, Jev, PebbleRing, Summarizer, make_handler
 
 
 class FakeCatchball:
@@ -89,6 +89,40 @@ class PebbleRingTest(unittest.TestCase):
         self.assertEqual([("了解しました。", "rec-1", b"m4a")], self.replies.posted)
         self.assertEqual(["了解しました。"], self.speech.spoken)
 
+    def ring_with_ack(self, classifier):
+        self.speech, self.replies = FakeSpeech(), FakeReplies()
+        self.catchball = FakeCatchball(members=[SECRETARY])
+        return PebbleRing(self.catchball, "main", Summarizer("anthropic", "", "m"), self.speech, self.replies,
+                          acknowledger=Acknowledger(KINDS, classifier, self.speech), run_async=lambda task: task())
+
+    def test_acknowledges_a_forwarded_transcription_right_away(self):
+        ring = self.ring_with_ack(FakeClassifier())
+        ring.on_stt({"text": "近くのフレンチを教えて", "request_id": "rec-1"})
+        ring.tick()
+        self.assertEqual("[ユーザーの声] 近くのフレンチを教えて", self.catchball.sent[-1][1])
+        self.assertEqual([("いいところを探してみますね。", None, b"m4a")], self.replies.posted)
+
+    def test_asks_again_instead_of_forwarding_unclear_speech(self):
+        ring = self.ring_with_ack(FakeClassifier(choice="unclear", confidence=0.9))
+        ring.on_stt({"text": "フィリピンダバオに", "request_id": "rec-1"})
+        ring.tick()
+        self.assertEqual([("main", INTRO)], self.catchball.sent)
+        self.assertEqual([("それって何ですか？", "rec-1", b"m4a")], self.replies.posted)
+
+    def test_passes_the_last_two_exchanges_to_the_classifier(self):
+        classifier = FakeClassifier()
+        ring = self.ring_with_ack(classifier)
+        for i in range(3):
+            ring.on_stt({"text": f"質問{i}"})
+            ring.tick()
+            self.catchball.inbound = [message(f"返事{i}")]
+            ring.tick()
+        ring.on_stt({"text": "最後"})
+        ring.tick()
+        self.assertEqual(
+            [{"user": "質問1"}, {"secretary": "返事1"}, {"user": "質問2"}, {"secretary": "返事2"}],
+            classifier.asked[-1][0]["recent"])
+
     def test_long_reply_is_shown_in_full_but_spoken_shortened(self):
         ring = self.ring(FakeCatchball(members=[SECRETARY]))
         long_text = "あ" * (SPOKEN_PLAIN_CHARS + 50)
@@ -129,6 +163,86 @@ class PebbleRingTest(unittest.TestCase):
         ring.tick()
         self.assertEqual(0, ring.inbox.qsize())
         self.assertIn("INVALID_ARGUMENT", self.replies.posted[0][0])
+
+
+KINDS = [
+    {"id": "place", "when": "お店を探している", "phrase": "いいところを探してみますね。"},
+    {"id": "unclear", "when": "意味が取れない", "phrase": "それって何ですか？"},
+    {"id": "default", "when": "どれにも当てはまらない", "phrase": "はい、少々お待ちください。"},
+]
+
+
+class FakeClassifier:
+    def __init__(self, choice="place", confidence=0.9, error=None):
+        self.result = (choice, confidence)
+        self.error = error
+        self.asked = []
+
+    def choose(self, state, instructions, options):
+        self.asked.append((state, options))
+        if self.error:
+            raise self.error
+        return self.result
+
+
+class AcknowledgerTest(unittest.TestCase):
+    def test_classifies_the_latest_utterance_with_the_recent_conversation(self):
+        classifier = FakeClassifier()
+        ack = Acknowledger(KINDS, classifier, FakeSpeech())
+        self.assertEqual(("place", 0.9), ack.classify("そこ予約して", [{"user": "フレンチを教えて"}]))
+        state, options = classifier.asked[0]
+        self.assertEqual({"recent": [{"user": "フレンチを教えて"}], "latest": "そこ予約して"}, state)
+        self.assertEqual("お店を探している", options["place"])
+
+    def test_classification_failures_count_as_default(self):
+        ack = Acknowledger(KINDS, FakeClassifier(error=ApiError(500, "E", "down")), FakeSpeech())
+        self.assertEqual(("default", 0.0), ack.classify("x"))
+        self.assertEqual(("default", 0.0), Acknowledger(KINDS, FakeClassifier(choice="nope"), FakeSpeech()).classify("x"))
+        self.assertEqual(("default", 0.0), Acknowledger(KINDS, None, FakeSpeech()).classify("x"))
+
+    def test_acknowledgement_falls_back_to_default_when_unsure_or_unclear(self):
+        ack = Acknowledger(KINDS, None, FakeSpeech())
+        self.assertEqual("いいところを探してみますね。", ack.acknowledgement(("place", 0.9)))
+        self.assertEqual("はい、少々お待ちください。", ack.acknowledgement(("place", 0.2)))
+        self.assertEqual("はい、少々お待ちください。", ack.acknowledgement(("unclear", 0.6)))
+
+    def test_only_confident_unclear_speech_needs_clarification(self):
+        ack = Acknowledger(KINDS, None, FakeSpeech())
+        self.assertTrue(ack.needs_clarification(("unclear", 0.9)))
+        self.assertFalse(ack.needs_clarification(("unclear", 0.6)))
+        self.assertFalse(ack.needs_clarification(("place", 1.0)))
+
+    def test_synthesizes_each_phrase_once(self):
+        speech = FakeSpeech()
+        ack = Acknowledger(KINDS, None, speech)
+        ack.prepare()
+        self.assertEqual(b"m4a", ack.audio_for("はい、少々お待ちください。"))
+        self.assertEqual([k["phrase"] for k in KINDS], speech.spoken)
+
+    def test_shipped_kinds_are_valid(self):
+        with open(ACKS_PATH, encoding="utf-8") as f:
+            kinds = json.load(f)
+        ids = [k["id"] for k in kinds]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertTrue({"default", "unclear"} <= set(ids))
+        self.assertTrue(all(k["when"] and k["phrase"] for k in kinds))
+
+
+class JevTest(unittest.TestCase):
+    def test_asks_a_choice_question(self):
+        calls = []
+
+        def request(method, url, body=None, headers=None, timeout=10, raw=False):
+            calls.append((url, body, headers))
+            return {"answers": {"kind": {"type": "choice", "choice": "place", "confidence": 0.8}}}
+
+        result = Jev("key", request=request).choose("フレンチを教えて", "どの種類か", {"place": "お店"})
+        self.assertEqual(("place", 0.8), result)
+        url, body, headers = calls[0]
+        self.assertEqual("https://api.typesafe.ai/v1/systemone", url)
+        self.assertEqual("Bearer key", headers["Authorization"])
+        self.assertEqual({"type": "choice", "instructions": "どの種類か", "criteria": {"place": "お店"}}, body["questions"]["kind"])
+        self.assertEqual("フレンチを教えて", body["state"])
 
 
 class SummarizerTest(unittest.TestCase):

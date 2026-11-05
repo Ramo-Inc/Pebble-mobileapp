@@ -17,6 +17,8 @@ iPhone で自動再生 ◀── 返事サーバー POST /replies ◀── pebb
 - **参加**：起動すると、参加用キー（`join.key`）でルームに `pebble-ring` として参加する。ルームがなければ作る。役割の文に「ユーザーとの連絡口。返事は pebble-ring 宛てに」と書く。
 - **紹介**：秘書（`SECRETARY_ID`）がルームにいれば、使い方の説明を1回送る（起動のたび。`POST /intro` で送り直せる）。
 - **ユーザー → 秘書**：返事サーバーから届いた文字起こしを、`[ユーザーの声] <本文>` として秘書に送る。
+- **相づち**：秘書に送る前に、話の種類を Jev（TypeSafe）が `acks.json` の約20種類から選ぶ（直近2往復の会話も渡す）。送った直後に、その種類の短い相づちを音声で返す。キーがないとき・自信が低いときは `default` の言葉にする。音声は起動時に作っておく。
+- **聞き返し**：Jev が「意味が取れない（`unclear`）」と強く判断したとき（確信度0.8以上）は秘書に送らず、`unclear` の言葉で聞き返す。Jev が失敗したり3秒以上かかったときは、そのまま秘書に送る。
 - **秘書 → ユーザー**：`pebble-ring` 宛ての**個別メッセージ**を受け取るたびに、返事サーバーへ送る。全員宛ては送らない。
   - 文字：本文そのまま（iPhone に全文表示）
   - 音声：要約API で、内容に合った長さの話し言葉に要約し（注意書き・印・括弧は読まない。英字と数字はそのまま）、TTS で M4A にする
@@ -45,6 +47,7 @@ cp tools/skill/pebble-ring/.env.example tools/skill/pebble-ring/.env
 | `SUMMARY_PROVIDER` | `anthropic` か `openai`（OpenAI 互換なら何でも） |
 | `SUMMARY_MODEL` / `SUMMARY_API_KEY` / `SUMMARY_BASE_URL` | 例：`claude-haiku-5-5`。DeepSeek なら `openai` ＋ `deepseek-chat` ＋ `https://api.deepseek.com`。キーが空なら要約せず先頭を読む |
 | `TTS_URL` / `TTS_VOICE` | TTS のアドレスと話者（空ならアダプタの既定） |
+| `PEBBLE_JEV_API_KEY` | 相づちの種類を選ぶ Jev の API キー（console.typesafe.ai で発行）。空なら相づちは常に `default` |
 
 ## 起動（launchd で常駐）
 

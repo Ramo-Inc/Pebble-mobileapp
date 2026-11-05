@@ -22,15 +22,22 @@ import time
 import urllib.error
 import uuid
 import urllib.request
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+ACKS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "acks.json")
 DEFAULT_JOIN_KEY = os.path.expanduser("~/Library/Application Support/session-mail/tokens/join.key")
 POLL_SECONDS = 2
 REQUEST_ID_MEMORY = 500
 SPOKEN_PLAIN_CHARS = 80
 SUMMARY_MAX_TOKENS = 4000
+ACK_MIN_CONFIDENCE = 0.5
+CLARIFY_MIN_CONFIDENCE = 0.8
+CLARIFY_KIND = "unclear"
+ACK_INSTRUCTIONS = "latest は、ユーザーがリング越しに秘書へ話しかけた最新の発話。recent（直前の会話）も踏まえると、latest はどの種類の話か"
+HISTORY_TURNS = 4
+HISTORY_CHARS = 200
 
 ROLE = (
     "ユーザー（人間）との連絡口。私からの本文はユーザーが声で話した内容。"
@@ -214,6 +221,77 @@ class Speech:
             return None
 
 
+class Jev:
+    """TypeSafe System One (Jev): answers a choice question about a text."""
+
+    URL = "https://api.typesafe.ai/v1/systemone"
+
+    def __init__(self, api_key, model="jev-latest", request=http_request):
+        self.api_key = api_key
+        self.model = model
+        self.request = request
+
+    def choose(self, text, instructions, options):
+        r = self.request("POST", self.URL, {
+            "state": text,
+            "model": self.model,
+            "questions": {"kind": {"type": "choice", "instructions": instructions, "criteria": options}},
+        }, {"Authorization": f"Bearer {self.api_key}"}, 3)
+        answer = r["answers"]["kind"]
+        return answer["choice"], answer.get("confidence", 0)
+
+
+class Acknowledger:
+    """Picks a short acknowledgement that fits what the user said, with its audio synthesized ahead of time."""
+
+    def __init__(self, kinds, classifier, speech):
+        self.kinds = {k["id"]: k for k in kinds}
+        self.classifier = classifier
+        self.speech = speech
+        self.audio = {}
+
+    def prepare(self):
+        for kind in self.kinds.values():
+            self.audio_for(kind["phrase"])
+
+    def classify(self, text, history=()):
+        """Returns (kind id, confidence); ("default", 0.0) when no classifier answers."""
+        if self.classifier:
+            try:
+                kind, confidence = self.classifier.choose(
+                    {"recent": list(history), "latest": text}, ACK_INSTRUCTIONS,
+                    {k["id"]: k["when"] for k in self.kinds.values()})
+                if kind in self.kinds:
+                    return kind, confidence
+            except (ApiError, urllib.error.URLError, TimeoutError, KeyError, TypeError, ValueError) as e:
+                print(f"[ack] classification failed: {e}", flush=True)
+        return "default", 0.0
+
+    def needs_clarification(self, kind):
+        kind_id, confidence = kind
+        return kind_id == CLARIFY_KIND and confidence >= CLARIFY_MIN_CONFIDENCE
+
+    def clarification(self):
+        return self.kinds[CLARIFY_KIND]["phrase"]
+
+    def acknowledgement(self, kind):
+        kind_id, confidence = kind
+        if kind_id == CLARIFY_KIND or confidence < ACK_MIN_CONFIDENCE:
+            kind_id = "default"
+        return self.kinds[kind_id]["phrase"]
+
+    def audio_for(self, phrase):
+        if phrase not in self.audio:
+            audio = self.speech.synthesize(phrase)
+            if audio:
+                self.audio[phrase] = audio
+        return self.audio.get(phrase)
+
+
+def run_in_thread(task):
+    threading.Thread(target=task, daemon=True).start()
+
+
 class ReplyServer:
     def __init__(self, base_url, token, request=http_request):
         self.base_url = base_url.rstrip("/")
@@ -231,13 +309,16 @@ class ReplyServer:
 class PebbleRing:
     """Moves transcriptions to the secretary and the secretary's messages back to the user."""
 
-    def __init__(self, catchball, secretary_id, summarizer, speech, replies):
+    def __init__(self, catchball, secretary_id, summarizer, speech, replies, acknowledger=None, run_async=run_in_thread):
         self.catchball = catchball
         self.secretary_id = secretary_id
         self.summarizer = summarizer
         self.speech = speech
         self.replies = replies
+        self.acknowledger = acknowledger
+        self.run_async = run_async
         self.inbox = queue.Queue()
+        self.history = deque(maxlen=HISTORY_TURNS)
         self.request_ids = OrderedDict()
         self.introduced = False
 
@@ -270,6 +351,14 @@ class PebbleRing:
                 payload = self.inbox.get_nowait()
             except queue.Empty:
                 return
+            if self.acknowledger and "kind" not in payload:
+                payload["kind"] = self.acknowledger.classify(payload["text"], self.history)
+            kind = payload.get("kind")
+            if kind and self.acknowledger.needs_clarification(kind):
+                print(f"[stt {payload.get('request_id') or '-'}] unclear, asked again: {payload['text']}", flush=True)
+                self._record("user", payload["text"])
+                self.run_async(lambda rid=payload.get("request_id"): self._say(self.acknowledger.clarification(), rid))
+                continue
             try:
                 message_id = self.catchball.send(self.secretary_id, f"[ユーザーの声] {payload['text']}", payload["client_id"])
             except ApiError as e:
@@ -284,16 +373,34 @@ class PebbleRing:
                 self._tell_user(reason, payload.get("request_id"))
                 continue
             self._remember(message_id, payload.get("request_id"))
+            self._record("user", payload["text"])
             print(f"[stt {payload.get('request_id') or '-'}] sent to {self.secretary_id}", flush=True)
+            if kind:
+                self.run_async(lambda: self._say(self.acknowledger.acknowledgement(kind)))
 
     def _remember(self, message_id, request_id):
         self.request_ids[message_id] = request_id
         while len(self.request_ids) > REQUEST_ID_MEMORY:
             self.request_ids.popitem(last=False)
 
+    def _record(self, speaker, text):
+        self.history.append({speaker: text[:HISTORY_CHARS]})
+
     def _deliver(self, message):
+        self._record("secretary", message["body"])
         self._tell_user(message["body"], self.request_ids.get(message.get("reply_to")))
         print(f"[reply from {message['from']['id']}] {message['body'][:60]}", flush=True)
+
+    def _say(self, phrase, request_id=None):
+        """Sends a stock phrase whose audio the acknowledger keeps ready."""
+        audio = self.acknowledger.audio_for(phrase)
+        if not audio:
+            return
+        try:
+            self.replies.post(phrase, request_id, audio)
+            print(f"[ack] {phrase}", flush=True)
+        except (ApiError, urllib.error.URLError, TimeoutError) as e:
+            print(f"[ack] failed: {e}", flush=True)
 
     def _tell_user(self, text, request_id=None):
         spoken = self.summarizer.spoken(text)
@@ -364,14 +471,21 @@ def cmd_serve(args):
     env = os.environ.get
     with open(os.path.expanduser(env("CATCHBALL_JOIN_KEY_FILE", DEFAULT_JOIN_KEY)), encoding="utf-8") as f:
         join_key = f.read().strip()
+    speech = Speech(env("TTS_URL", "http://127.0.0.1:10102"), env("TTS_VOICE", ""))
+    with open(ACKS_PATH, encoding="utf-8") as f:
+        kinds = json.load(f)
+    typesafe_key = env("PEBBLE_JEV_API_KEY", "")
+    acknowledger = Acknowledger(kinds, Jev(typesafe_key) if typesafe_key else None, speech)
+    threading.Thread(target=acknowledger.prepare, daemon=True).start()
     ring = PebbleRing(
         Catchball(env("CATCHBALL_URL", "http://127.0.0.1:47821"), join_key, env("CATCHBALL_ROOM", "voice"),
                   env("PEBBLE_RING_ID", "pebble-ring"), env("PEBBLE_RING_NAME", "Pebble リング")),
         env("SECRETARY_ID", "main"),
         Summarizer(env("SUMMARY_PROVIDER", "anthropic"), env("SUMMARY_API_KEY", ""),
                    env("SUMMARY_MODEL", "claude-haiku-5-5"), env("SUMMARY_BASE_URL", "")),
-        Speech(env("TTS_URL", "http://127.0.0.1:10102"), env("TTS_VOICE", "")),
+        speech,
         ReplyServer(env("REPLY_SERVER_URL", "http://127.0.0.1:8765"), env("REPLY_TOKEN", "")),
+        acknowledger,
     )
     stop = threading.Event()
     threading.Thread(target=ring.run, args=(stop,), daemon=True).start()
