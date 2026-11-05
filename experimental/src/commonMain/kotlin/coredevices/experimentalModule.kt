@@ -316,7 +316,7 @@ val experimentalModule = module {
     singleOf(::IndexSettingsSummary)
     singleOf(::IndexRebootLogStore)
     single { RingRssiStatistics(get()) } bind HeartbeatMetricsSource::class
-    singleOf(::ExperimentalDevices)
+    single { ExperimentalDevices(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
     single { TargetCalendarSeeder(get(), get<LibPebble>(), get()) }
     singleOf(::PrefsCollectionIndexStorage) bind CollectionIndexStorage::class
     factory { HackyPermissionRequesterProvider { get<PermissionRequester>() } }
