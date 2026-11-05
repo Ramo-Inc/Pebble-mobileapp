@@ -30,6 +30,7 @@ DEFAULT_JOIN_KEY = os.path.expanduser("~/Library/Application Support/session-mai
 POLL_SECONDS = 2
 REQUEST_ID_MEMORY = 500
 SPOKEN_PLAIN_CHARS = 80
+SUMMARY_MAX_TOKENS = 4000
 
 ROLE = (
     "ユーザー（人間）との連絡口。私からの本文はユーザーが声で話した内容。"
@@ -45,9 +46,14 @@ INTRO = """pebble-ring です。このルームでの、ユーザー（人間）
 - 全員宛て（to: "all"）のメッセージはユーザーには届きません。ユーザーに伝えたいことは必ず pebble-ring 宛てに送ってください。"""
 
 SUMMARY_PROMPT = (
-    "次の文章は、AI アシスタントからユーザーへの返事です。音声で読み上げるために、"
-    "日本語の話し言葉で2〜3文に要約してください。結論を先に言い、記号・箇条書き・URL・コードは使わないでください。"
-    "要約した文だけを出力してください。"
+    "<返事> の中は、AI アシスタントからユーザーへの返事です。音声で聞いてすぐわかるように、日本語の話し言葉で要点だけに要約してください。"
+    "長さは内容に合わせますが、元の返事よりずっと短くし、どんな場合も150字を超えません。時刻や了解のように一言で済む答えは一言で言います。"
+    "お店や方法など候補がいくつもあるときは、それぞれの名前と一番の特徴を短く並べます。"
+    "報告や調べた結果は、結論と大事な数字を言います。"
+    "細かい説明・経緯・あいさつ・締めの言葉は入れません。"
+    "「行く前に確認してください」「情報が古い可能性があります」のような確認の呼びかけや注意書きは、元の返事にあっても必ず省きます。"
+    "[確認] のような印・括弧・記号・URL は使わないでください。英字の名前はカタカナにせず元の綴りのまま、数字もそのまま書きます。"
+    "返事に答えたり内容を付け足したりせず、読み上げる文だけを出力してください。"
 )
 
 
@@ -145,7 +151,7 @@ class Catchball:
 
 
 class Summarizer:
-    """Turns a reply into 2-3 spoken sentences via Anthropic or any OpenAI-compatible chat API."""
+    """Turns a reply into a short spoken summary via Anthropic or any OpenAI-compatible chat API."""
 
     def __init__(self, provider, api_key, model, base_url="", request=http_request):
         self.provider = provider
@@ -156,27 +162,28 @@ class Summarizer:
 
     def spoken(self, text):
         text = text.strip()
-        if len(text) <= SPOKEN_PLAIN_CHARS:
-            return text
         if self.api_key:
             try:
                 summary = self._summarize(text).strip()
                 if summary:
                     return summary
             except (ApiError, urllib.error.URLError, TimeoutError, KeyError, IndexError, ValueError) as e:
-                print(f"[summary] failed, reading the beginning instead: {e}", flush=True)
+                print(f"[summary] failed, reading the original instead: {e}", flush=True)
+        if len(text) <= SPOKEN_PLAIN_CHARS:
+            return text
         return text[:SPOKEN_PLAIN_CHARS] + "。続きは画面で確認してください。"
 
     def _summarize(self, text):
         if self.provider == "anthropic":
             r = self.request("POST", (self.base_url or "https://api.anthropic.com") + "/v1/messages", {
-                "model": self.model, "max_tokens": 400, "system": SUMMARY_PROMPT,
-                "messages": [{"role": "user", "content": text}],
+                "model": self.model, "max_tokens": SUMMARY_MAX_TOKENS, "system": SUMMARY_PROMPT,
+                "output_config": {"effort": "medium"},
+                "messages": [{"role": "user", "content": f"<返事>{text}</返事>"}],
             }, {"x-api-key": self.api_key, "anthropic-version": "2023-06-01"}, 30)
             return "".join(b.get("text", "") for b in r["content"] if b.get("type") == "text")
         r = self.request("POST", (self.base_url or "https://api.openai.com/v1") + "/chat/completions", {
-            "model": self.model, "max_tokens": 400,
-            "messages": [{"role": "system", "content": SUMMARY_PROMPT}, {"role": "user", "content": text}],
+            "model": self.model, "max_tokens": SUMMARY_MAX_TOKENS,
+            "messages": [{"role": "system", "content": SUMMARY_PROMPT}, {"role": "user", "content": f"<返事>{text}</返事>"}],
         }, {"Authorization": f"Bearer {self.api_key}"}, 30)
         return r["choices"][0]["message"]["content"]
 
@@ -289,7 +296,9 @@ class PebbleRing:
         print(f"[reply from {message['from']['id']}] {message['body'][:60]}", flush=True)
 
     def _tell_user(self, text, request_id=None):
-        self.replies.post(text, request_id, self.speech.synthesize(self.summarizer.spoken(text)))
+        spoken = self.summarizer.spoken(text)
+        print(f"[spoken] {spoken}", flush=True)
+        self.replies.post(text, request_id, self.speech.synthesize(spoken))
 
     def run(self, stop):
         """Join, then heartbeat and poll until stop is set; rejoins after the broker or token is lost."""

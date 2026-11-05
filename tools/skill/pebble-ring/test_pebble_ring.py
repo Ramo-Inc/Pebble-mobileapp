@@ -143,10 +143,22 @@ class SummarizerTest(unittest.TestCase):
 
         return calls, request
 
-    def test_short_text_is_spoken_as_is_without_calling_the_api(self):
+    def test_short_text_is_also_rewritten_for_speech(self):
+        calls, request = self.capture({"content": [{"type": "text", "text": "今は午前4時48分です。"}]})
+        s = Summarizer("anthropic", "key", "m", request=request)
+        self.assertEqual("今は午前4時48分です。", s.spoken("[確認] 今は 午前4時48分（PST）です。"))
+        self.assertEqual(1, len(calls))
+
+    def test_short_text_is_spoken_as_is_without_an_api_key(self):
         calls, request = self.capture({})
-        self.assertEqual("短い", Summarizer("anthropic", "key", "m", request=request).spoken("短い"))
+        self.assertEqual("短い", Summarizer("anthropic", "", "m", request=request).spoken("短い"))
         self.assertEqual([], calls)
+
+    def test_short_text_is_spoken_as_is_when_the_api_fails(self):
+        def failing(*args, **kwargs):
+            raise ApiError(500, "ERR", "down")
+
+        self.assertEqual("短い", Summarizer("anthropic", "key", "m", request=failing).spoken("短い"))
 
     def test_anthropic_messages_api(self):
         calls, request = self.capture({"content": [{"type": "text", "text": "要約です。"}]})
