@@ -1,5 +1,7 @@
 # 作業指示書：Mac miniでビルドしてiPhone実機でテストする（Reply audio MVP）
 
+> **注記（2026-11-05 夜）**：この文書は作成日時点の設計記録です。今の状態は `docs/tts-reply/HANDOFF.md` を見てください。返事の取得間隔は今は1秒です。
+
 - 対象リポジトリ：https://github.com/Ramo-Inc/Pebble-mobileapp
 - 対象ブランチ：`master`
 - 設計書：`docs/tts-reply/DESIGN.md`

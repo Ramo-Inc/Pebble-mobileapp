@@ -1,5 +1,7 @@
 # アプリ内 Gemini Live（クライアント側の音声会話）— 設計書
 
+> **注記（2026-11-05 夜）**：§1 の「転送が終わってから送る」流れは、その後「区切りが届くたびに流し込む」方式に変えた（§8）。今の状態は `docs/tts-reply/HANDOFF.md` §2。
+
 - 作成日：2026-11-05
 - 対象：iPhone / Android アプリ（`experimental` モジュール）
 - 目的：リングで話したら、**Mac を通さず、アプリから直接 Gemini Live と会話**し、返事を**届いた端からストリーム再生**する。遅延を最小にする。
@@ -147,8 +149,14 @@
 5. ボタン設定の選択肢（Gemini Live・API キー・会話リセット）とログ表示
 6. Mac mini でビルド・実機確認（G1〜G6）
 
-## 8. 実装状況（2026-11-05）
+## 8. 実装状況（2026-11-05 夜）
 
-- 1〜5 を実装済み。コードは `experimental/src/commonMain/kotlin/coredevices/ring/external/geminilive/`、テストは `experimental/src/commonTest/kotlin/coredevices/ring/external/geminilive/GeminiLiveTest.kt`。
+- 1〜6 を実装・実機確認済み（Android、moto g24）。コードは `experimental/src/commonMain/kotlin/coredevices/ring/external/geminilive/`、テストは `experimental/src/commonTest/kotlin/coredevices/ring/external/geminilive/GeminiLiveTest.kt`。
 - 設計からの追加：Gemini Live を選んだ押し方には Webhook を被せない（`IndexWebhookConfig.sendsFor` で除外）。既存の Webhook ラッパーは、文字起こしを使う送り先以外の処理を「文字起こしだけ」に置き換えるため、被せると Gemini が動かなくなる。シートの「Also send to webhook」も出さない。
-- 未確認：ビルドと単体テストの実行、実機確認（G1〜G6）。Mac mini で行う。
+- ビルドの修正：`ExperimentalDevices` の部品が23個になり Koin の `singleOf` の上限（22個）を超えたので、`single { ExperimentalDevices(get(), …) }` で登録（`07e3f392`）。
+- テストの修正：返事ログの保存先を渡す部分が呼ばれるたびに別のフォルダを返していたので、1つに固定（`729dfeb5`）。
+- 接続の上限：初期設定と返事待ちを最長2分で打ち切る（`9a893ffc`）。
+- 押し方の判定：リングは長押し中に誤検出の短押しを報告する（`long short short …`）ので、録音の振り分けでは最後の長押しより後の短押しを無視する（`411f0dfd`）。前は Index agent に回っていて、Gemini に届かなかった。
+- **区切りの流し込み**（`be6e54a8`）：リングの区切りを、ライブラリの公開項目 `environment.transferDelegate` を包んで横から受け取り（`RingAudioTap`）、届くたびに Gemini に送る（`GeminiLiveStreamer`）。最後の区切りの押し方が Gemini Live なら、すぐ `activityEnd` を送って返事を受ける。録音処理の順番待ちの `GeminiLiveRecordingOperation` は、流し込み済みならそれを使い、答えられていなければ保存済みの録音で答える。1秒未満の録音（ボタン操作）は送らない。
+- 実測（ボタンを離す→鳴り始め）：全部そろってから送る方式で 6.0〜6.7秒 → 流し込み方式で 3.6〜5.3秒。最後の区切りから `activityEnd` までは0.02秒。残りはリングが送り始めるまで（0.9〜1.8秒）、リングが送る時間（1.5〜1.7秒）、Gemini の考える時間（1.0〜1.9秒）。
+- 未確認：iPhone 実機（コンパイルは通る）、G2（ロック中）、G4（会話をリセット）、G6（キーを間違える）。

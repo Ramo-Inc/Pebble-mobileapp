@@ -2,7 +2,7 @@
 
 Pebble アプリの **Reply audio** 機能で使う、Mac 側の小さなサーバー。
 
-- **返事**：エージェントや TTS が返事（文字＋音声）を登録し、iPhone アプリが3秒ごとに取りに来て自動再生する。
+- **返事**：エージェントや TTS が返事（文字＋音声）を登録し、アプリが1秒ごとに取りに来て自動再生する。
 - **文字起こしの転送**：iPhone アプリの Webhook を受け取り、文字起こしを JSON で指定のサーバー（`RELAY_URL`）へ転送する。
 
 | 資料 | 内容 |
@@ -72,7 +72,7 @@ Reply server on http://0.0.0.0:8765 (store: ...)
 Webhook relay: http://127.0.0.1:9000/stt
 ```
 
-- 返事が登録されるたびに `[reply 12] 結果です…`（3秒ごとの取得は表示しない）
+- 返事が登録されるたびに `[reply 12] 結果です…`（1秒ごとの取得は表示しない）
 - Webhook を受け取るたびに `[webhook <id>] <文字起こし>`、転送できたら `[relay <id>] delivered`
 
 止めるときは `Ctrl+C`。
@@ -118,7 +118,9 @@ Index 設定 → **Webhook** → ジェスチャー（Hold & talk など）を�
 - 同じ録音（`X-Index-Delivery` が同じ）は1回しか転送しない。
 - 「Send test event」のテスト送信とボタン操作（クリック）は転送しない。
 
-## 6-2. 音声AIで直接返事する（Speech to Speech）
+## 6-2. Mac 経由の Gemini で直接返事する（Speech to Speech）
+
+> アプリのボタン設定の行き先「Gemini Live」は、これとは別の**アプリ内 Gemini**（Mac を通らない）。行き先が Gemini Live の押し方は Webhook を送らないので、この 6-2 は使われない。全体は `docs/tts-reply/HANDOFF.md` §1。
 
 Webhook で**録音そのもの**を送ると、Gemini Live が音声で直接返事をする。秘書セッションを通さないので速い。
 
