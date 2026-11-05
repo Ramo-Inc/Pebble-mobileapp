@@ -13,6 +13,9 @@ data class ReplyDto(
     @SerialName("audio_base64") val audioBase64: String? = null,
     /** Unix time in milliseconds when the server created the reply. */
     @SerialName("created_at") val createdAt: Long? = null,
+    /** Path of the reply's PCM stream while the server is still producing its audio. */
+    val stream: String? = null,
+    @SerialName("sample_rate") val sampleRate: Int? = null,
 )
 
 @Serializable
@@ -30,6 +33,9 @@ data class ReplyLogEntry(
     val receivedAtMs: Long,
     val hasAudio: Boolean,
     val played: Boolean = false,
+    /** Set until the streamed audio has been played and saved. */
+    val streamPath: String? = null,
+    val sampleRate: Int? = null,
 ) {
     val createdAt: Instant get() = Instant.fromEpochMilliseconds(createdAtMs)
 }
@@ -44,7 +50,7 @@ object ReplyAudioRules {
             .distinctBy { it.id }
             .sortedBy { it.id }
 
-    fun shouldAutoPlay(entry: ReplyLogEntry): Boolean = entry.hasAudio && !entry.played
+    fun shouldAutoPlay(entry: ReplyLogEntry): Boolean = (entry.hasAudio || entry.streamPath != null) && !entry.played
 
     fun feedPreview(log: List<ReplyLogEntry>, expanded: Boolean): List<ReplyLogEntry> =
         if (expanded) log else log.take(FEED_PREVIEW_COUNT)

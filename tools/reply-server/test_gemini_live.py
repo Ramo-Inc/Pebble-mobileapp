@@ -19,7 +19,7 @@ from gemini_live import (
     open_socket,
     pcm_to_wav,
 )
-from reply_server import ReplyStore, VoiceResponder, parse_form
+from reply_server import AudioStreams, ReplyStore, VoiceResponder, parse_form
 
 
 def server_frame(opcode, payload, fin=True):
@@ -199,13 +199,19 @@ class ConversationHistoryTest(unittest.TestCase):
 
 
 class FakeLive:
-    def __init__(self, result=None, error=None):
+    def __init__(self, result=None, error=None, chunks=(), during=None):
         self.result = result
         self.error = error
+        self.chunks = chunks
+        self.during = during
         self.calls = []
 
-    def respond(self, pcm, history):
+    def respond(self, pcm, history, on_audio=None):
         self.calls.append((pcm, history))
+        for chunk in self.chunks:
+            on_audio(chunk, 24000)
+        if self.during:
+            self.during()
         if self.error:
             raise self.error
         return self.result
@@ -241,10 +247,70 @@ class VoiceResponderTest(unittest.TestCase):
         self.assertIsNone(replies[-1]["audio_base64"])
         self.assertEqual(1, len(self.history.turns()))
 
+    def test_reply_is_announced_as_a_stream_at_the_first_audio_chunk(self):
+        seen = {}
+        responder = None
+
+        def during():
+            reply = self.store.after(None)[-1]
+            seen["reply"] = dict(reply)
+            seen["finished"] = responder.streams.streams[reply["id"]]["done"]
+
+        live = FakeLive(LiveResult("質問", "答え", b"\x01\x00\x02\x00", 24000), chunks=[b"\x01\x00", b"\x02\x00"], during=during)
+        responder = self.responder(live)
+        reply = responder.respond({"audio": b"m4a", "request_id": "d1"})
+
+        self.assertEqual(f"/replies/{reply['id']}/stream", seen["reply"]["stream"])
+        self.assertEqual(24000, seen["reply"]["sample_rate"])
+        self.assertIsNone(seen["reply"]["audio_base64"])
+        self.assertFalse(seen["finished"])
+        self.assertEqual([b"\x01\x00", b"\x02\x00"], list(responder.streams.read(reply["id"])))
+        final = self.store.get(reply["id"])
+        self.assertEqual("答え", final["text"])
+        self.assertIsNotNone(final["audio_base64"])
+        self.assertEqual(1, len(self.store.after(None)))
+
+    def test_failure_after_streaming_started_updates_the_same_reply(self):
+        responder = self.responder(FakeLive(error=LiveError("dropped"), chunks=[b"\x01\x00"]))
+        responder.respond({"audio": b"m4a", "request_id": "d1"})
+
+        replies = self.store.after(None)
+        self.assertEqual(1, len(replies))
+        self.assertIn("dropped", replies[0]["text"])
+        self.assertTrue(responder.streams.streams[replies[0]["id"]]["done"])
+
     def test_same_delivery_is_queued_once(self):
         responder = self.responder(FakeLive())
         self.assertTrue(responder.enqueue({"audio": b"a", "request_id": "d1"}))
         self.assertFalse(responder.enqueue({"audio": b"a", "request_id": "d1"}))
+
+
+class AudioStreamsTest(unittest.TestCase):
+    def test_reader_gets_chunks_as_they_arrive_and_stops_when_finished(self):
+        streams = AudioStreams()
+        streams.open(1, 24000)
+        streams.append(1, b"a")
+        received = []
+        reader = threading.Thread(target=lambda: received.extend(streams.read(1)))
+        reader.start()
+        streams.append(1, b"b")
+        streams.finish(1)
+        reader.join(2)
+        self.assertEqual([b"a", b"b"], received)
+        self.assertEqual([b"a", b"b"], list(streams.read(1)))
+
+    def test_stalled_stream_ends_the_reader(self):
+        streams = AudioStreams(idle_timeout=0.05)
+        streams.open(1, 24000)
+        self.assertEqual([], list(streams.read(1)))
+
+    def test_old_finished_streams_are_dropped(self):
+        streams = AudioStreams(keep=1)
+        for i in range(3):
+            streams.open(i, 24000)
+            streams.finish(i)
+        streams.open(3, 24000)
+        self.assertEqual([2, 3], list(streams.streams))
 
 
 class ParseFormTest(unittest.TestCase):

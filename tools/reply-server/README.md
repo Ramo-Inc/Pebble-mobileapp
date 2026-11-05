@@ -142,6 +142,7 @@ Webhook で**録音そのもの**を送ると、Gemini Live が音声で直接�
    | Both | 音声AI（文字起こしを待ってから送るぶん遅い） |
    | Transcription only | 今までの仕組み（`RELAY_URL` へ転送） |
 
+- **ストリーム再生**：Gemini が最初の音声を返した時点（実測で録音を受け取ってから約2.5秒）で返事が登録され、iPhone は話し終わるのを待たずに再生を始める。話し終わると、同じ返事に文字と音声ファイルが入り、返事ログから聞き直せる。
 - 会話履歴は `tools/reply-server/conversation.jsonl`（gitには入らない）。直近 `GEMINI_HISTORY_TURNS` 件のやり取りを毎回 Gemini に渡すので、続きの会話ができる。
 - 履歴を消して新しい会話にする：`python3 tools/reply-server/reply_server.py clear-history`
 - 録音の変換に macOS の `afconvert` を使う（なければ `ffmpeg`）。

@@ -33,9 +33,21 @@ class ReplyAudioServiceTest {
     private class FakeApi : ReplyAudioApi {
         var replies: List<ReplyDto> = emptyList()
         val requestedCursors = mutableListOf<Long?>()
+        var streamChunks: List<ByteArray> = emptyList()
+        var streamError: Exception? = null
+        val finalReplies = mutableMapOf<Long, ReplyDto>()
+
         override suspend fun fetchReplies(baseUrl: String, token: String, after: Long?): ReplyListResponse {
             requestedCursors += after
             return ReplyListResponse(replies.filter { after == null || it.id > after })
+        }
+
+        override suspend fun fetchReply(baseUrl: String, token: String, id: Long): ReplyDto =
+            finalReplies[id] ?: throw ReplyAudioHttpException(404)
+
+        override suspend fun streamAudio(baseUrl: String, token: String, path: String, onChunk: suspend (ByteArray) -> Unit) {
+            streamChunks.forEach { onChunk(it) }
+            streamError?.let { throw it }
         }
     }
 
@@ -47,11 +59,15 @@ class ReplyAudioServiceTest {
     private val log = ReplyAudioLog(settings) { audioDir }
     private val api = FakeApi()
 
-    private fun TestScope.service(player: ReplyAudioPlayer = ReplyAudioPlayer { }) = ReplyAudioService(
+    private fun TestScope.service(
+        player: ReplyAudioPlayer = ReplyAudioPlayer { },
+        streamPlayer: ReplyStreamPlayer = ReplyStreamPlayer { _, chunks -> for (chunk in chunks) Unit },
+    ) = ReplyAudioService(
         preferences = preferences,
         api = api,
         log = log,
         player = player,
+        streamPlayer = streamPlayer,
         scope = RecordingBackgroundScope(backgroundScope),
         clock = clock,
     )
@@ -133,6 +149,55 @@ class ReplyAudioServiceTest {
         assertEquals(mapOf(1L to true, 2L to false, 3L to true, 4L to true), entries.associate { it.id to it.played })
     }
 
+    private fun streamingReply(id: Long) =
+        ReplyDto(id = id, requestId = "rec-1", text = "", stream = "/replies/$id/stream", sampleRate = 24000, createdAt = now.toEpochMilliseconds())
+
+    @Test
+    fun streamingReplyIsPlayedFromTheStreamAndThenSavedWithItsFinalText() = runTest {
+        api.replies = listOf(streamingReply(1))
+        api.streamChunks = listOf(byteArrayOf(1, 0), byteArrayOf(2, 0, 3))
+        api.finalReplies[1] = ReplyDto(id = 1, text = "最終の答え", audioBase64 = audioBase64)
+        val streamed = mutableListOf<Byte>()
+        var rate = 0
+        var filePlays = 0
+        service(
+            player = { filePlays++ },
+            streamPlayer = { sampleRate, chunks -> rate = sampleRate; for (chunk in chunks) streamed += chunk.toList() },
+        ).start()
+
+        val entry = log.entries.first { entries -> entries.any { it.played } }.single()
+        assertEquals(listOf<Byte>(1, 0, 2, 0, 3), streamed)
+        assertEquals(24000, rate)
+        assertEquals(0, filePlays)
+        assertEquals("最終の答え", entry.text)
+        assertTrue(entry.hasAudio)
+        assertNull(entry.streamPath)
+        assertContentEquals(audioBytes, log.readAudio(1))
+    }
+
+    @Test
+    fun streamedAudioIsSavedAsWavWhenTheServerHasNoFinalFile() = runTest {
+        api.replies = listOf(streamingReply(1))
+        api.streamChunks = listOf(byteArrayOf(1, 0, 2, 0))
+        api.finalReplies[1] = ReplyDto(id = 1, text = "答え")
+        service().start()
+
+        log.entries.first { entries -> entries.any { it.played } }
+        assertContentEquals(pcm16MonoToWav(byteArrayOf(1, 0, 2, 0), 24000), log.readAudio(1))
+    }
+
+    @Test
+    fun unreachableStreamFallsBackToTheFinishedFile() = runTest {
+        api.replies = listOf(streamingReply(1))
+        api.streamError = ReplyAudioHttpException(404)
+        api.finalReplies[1] = ReplyDto(id = 1, text = "答え", audioBase64 = audioBase64)
+        val filePlays = mutableListOf<ByteArray>()
+        service(player = { filePlays += it }).start()
+
+        log.entries.first { entries -> entries.any { it.played } }
+        assertContentEquals(audioBytes, filePlays.single())
+    }
+
     @Test
     fun failedPlaybackStaysUnplayedAndDoesNotBlockTheNextReply() = runTest {
         var calls = 0
@@ -172,6 +237,11 @@ class ReplyAudioRulesTest {
     }
 
     @Test
+    fun streamingReplyAutoPlaysBeforeItHasAudio() {
+        assertTrue(ReplyAudioRules.shouldAutoPlay(entry(now, hasAudio = false).copy(streamPath = "/replies/1/stream")))
+    }
+
+    @Test
     fun textOnlyOrPlayedReplyIsNotAutoPlayed() {
         assertFalse(ReplyAudioRules.shouldAutoPlay(entry(now, hasAudio = false)))
         assertFalse(ReplyAudioRules.shouldAutoPlay(entry(now, played = true)))
@@ -184,5 +254,33 @@ class ReplyAudioRulesTest {
         assertEquals(listOf(12L, 11L, 10L, 9L, 8L), ReplyAudioRules.feedPreview(log, expanded = false).map { it.id })
         assertEquals(log, ReplyAudioRules.feedPreview(log, expanded = true))
         assertEquals(log.take(2), ReplyAudioRules.feedPreview(log.take(2), expanded = false))
+    }
+}
+
+class ReplyStreamAudioTest {
+
+    @Test
+    fun accumulatorJoinsSamplesSplitAcrossChunks() {
+        val pcm = PcmAccumulator()
+        pcm.add(byteArrayOf(0x00, 0x40, 0x00))
+        assertEquals(1, pcm.frames)
+        pcm.add(byteArrayOf(0xC0.toByte()))
+        assertEquals(2, pcm.frames)
+        assertContentEquals(floatArrayOf(0.5f, -0.5f), pcm.take(2))
+        assertEquals(0, pcm.frames)
+    }
+
+    @Test
+    fun wavHeaderDescribesMono16BitPcm() {
+        val wav = pcm16MonoToWav(byteArrayOf(1, 2, 3, 4), 24000)
+        assertEquals(48, wav.size)
+        assertEquals("RIFF", wav.copyOfRange(0, 4).decodeToString())
+        assertEquals("WAVE", wav.copyOfRange(8, 12).decodeToString())
+        fun int(offset: Int) = (0 until 4).sumOf { (wav[offset + it].toInt() and 0xFF) shl (8 * it) }
+        assertEquals(40, int(4))
+        assertEquals(24000, int(24))
+        assertEquals(48000, int(28))
+        assertEquals(4, int(40))
+        assertContentEquals(byteArrayOf(1, 2, 3, 4), wav.copyOfRange(44, 48))
     }
 }

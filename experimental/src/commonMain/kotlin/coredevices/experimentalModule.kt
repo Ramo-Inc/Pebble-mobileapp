@@ -76,6 +76,8 @@ import coredevices.ring.external.replyaudio.ReplyAudioLog
 import coredevices.ring.external.replyaudio.ReplyAudioPlayer
 import coredevices.ring.external.replyaudio.ReplyAudioPreferences
 import coredevices.ring.external.replyaudio.ReplyAudioService
+import coredevices.ring.external.replyaudio.ReplyStreamPlayer
+import coredevices.ring.external.replyaudio.createReplyStreamPlayer
 import coredevices.ring.agent.integrations.obsidian.ObsidianPreferences
 import coredevices.ring.firestoreModule
 import coredevices.ring.mcpModule
@@ -275,7 +277,8 @@ val experimentalModule = module {
     single { ReplyAudioLog(get()) { Path(getRecordingsDataDirectory(), "replies") } }
     single<ReplyAudioApi> { ReplyAudioApiImpl(get()) }
     single<ReplyAudioPlayer> { createReplyAudioPlayer() }
-    single { ReplyAudioService(get(), get(), get(), get(), get()) }
+    single<ReplyStreamPlayer> { createReplyStreamPlayer() }
+    single { ReplyAudioService(get(), get(), get(), get(), get(), get()) }
     singleOf(::RecordingOperationFactory)
     singleOf(::RealRecordingStorage) bind RecordingStorage::class
     singleOf(::RecordingUploadSyncHandler) bind SyncHandler::class

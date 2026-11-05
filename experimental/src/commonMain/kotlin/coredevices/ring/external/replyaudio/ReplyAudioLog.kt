@@ -56,11 +56,21 @@ class ReplyAudioLog(
             createdAtMs = reply.createdAt ?: receivedAt.toEpochMilliseconds(),
             receivedAtMs = receivedAt.toEpochMilliseconds(),
             hasAudio = audio != null,
+            streamPath = reply.stream.takeIf { audio == null },
+            sampleRate = reply.sampleRate,
         )
         val (kept, dropped) = ReplyAudioRules.prepend(_entries.value, entry, MAX_ENTRIES)
         dropped.forEach { deleteAudio(it) }
         persist(kept)
         entry
+    }
+
+    /** Stores the final text and audio of a streamed reply, so it replays like any other. */
+    suspend fun completeStream(id: Long, text: String, audio: ByteArray?) = mutex.withLock {
+        if (audio != null) writeAudio(id, audio)
+        persist(_entries.value.map {
+            if (it.id == id) it.copy(text = text, hasAudio = audio != null || it.hasAudio, streamPath = null) else it
+        })
     }
 
     suspend fun markPlayed(id: Long) = mutex.withLock {

@@ -212,7 +212,8 @@ class GeminiLive:
             }
         }
 
-    def respond(self, pcm16k, history=()):
+    def respond(self, pcm16k, history=(), on_audio=None):
+        """Returns the whole reply; [on_audio](pcm, sample_rate) also gets each audio chunk as it arrives."""
         ws = self.connect(f"{LIVE_URL}?key={self.api_key}", self.timeout)
         try:
             ws.send_json(self.setup_message(history))
@@ -223,7 +224,7 @@ class GeminiLive:
                 chunk = base64.b64encode(pcm16k[i:i + AUDIO_CHUNK_BYTES]).decode("ascii")
                 ws.send_json({"realtimeInput": {"audio": {"data": chunk, "mimeType": f"audio/pcm;rate={INPUT_RATE}"}}})
             ws.send_json({"realtimeInput": {"activityEnd": {}}})
-            return self._collect(ws)
+            return self._collect(ws, on_audio)
         finally:
             ws.close()
 
@@ -233,7 +234,7 @@ class GeminiLive:
             raise LiveError(f"Live API error: {message['error']}")
         return message
 
-    def _collect(self, ws):
+    def _collect(self, ws, on_audio=None):
         audio, user_text, reply_text, rate = [], [], [], DEFAULT_OUTPUT_RATE
         while True:
             content = self._next(ws).get("serverContent")
@@ -243,7 +244,10 @@ class GeminiLive:
                 inline = part.get("inlineData")
                 if inline and inline.get("mimeType", "").startswith("audio/pcm"):
                     rate = pcm_rate(inline["mimeType"], rate)
-                    audio.append(base64.b64decode(inline["data"]))
+                    chunk = base64.b64decode(inline["data"])
+                    audio.append(chunk)
+                    if on_audio:
+                        on_audio(chunk, rate)
             user_text.append(content.get("inputTranscription", {}).get("text", ""))
             reply_text.append(content.get("outputTranscription", {}).get("text", ""))
             if content.get("turnComplete"):

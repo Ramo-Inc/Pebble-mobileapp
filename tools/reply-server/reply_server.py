@@ -158,8 +158,9 @@ class Relay:
 class VoiceResponder:
     """Answers recordings with Gemini Live one at a time, so each reply sees the previous exchange."""
 
-    def __init__(self, store, live, history, decode=decode_to_pcm16k):
+    def __init__(self, store, live, history, decode=decode_to_pcm16k, streams=None):
         self.store = store
+        self.streams = streams or AudioStreams()
         self.live = live
         self.history = history
         self.decode = decode
@@ -189,23 +190,97 @@ class VoiceResponder:
 
     def respond(self, payload):
         label = payload.get("request_id") or "-"
+        request_id = payload.get("request_id")
         started = time.monotonic()
+        streaming = None
+
+        def on_audio(chunk, rate):
+            nonlocal streaming
+            if streaming is None:
+                streaming = self.store.add("", request_id, None, sample_rate=rate)
+                self.streams.open(streaming["id"], rate)
+                print(f"[voice {label}] reply {streaming['id']} streaming after {time.monotonic() - started:.1f}s", flush=True)
+            self.streams.append(streaming["id"], chunk)
+
         try:
-            result = self.live.respond(self.decode(payload["audio"]), self.history.turns())
-        except Exception as e:
-            print(f"[voice {label}] failed: {e}", flush=True)
-            self.store.add(f"音声AIで返事を作れませんでした（{e}）", payload.get("request_id"), None)
-            return None
-        if not result.audio:
-            print(f"[voice {label}] no audio in the reply", flush=True)
-            self.store.add(result.reply_text or "音声AIから音声が返りませんでした", payload.get("request_id"), None)
-            return None
-        user_text = result.user_text or payload.get("text") or ""
-        audio_b64 = base64.b64encode(pcm_to_wav(result.audio, result.sample_rate)).decode("ascii")
-        reply = self.store.add(result.reply_text, payload.get("request_id"), audio_b64)
-        self.history.append(user_text, result.reply_text)
-        print(f"[voice {label}] reply {reply['id']} in {time.monotonic() - started:.1f}s: {result.reply_text[:60]}", flush=True)
-        return reply
+            try:
+                result = self.live.respond(self.decode(payload["audio"]), self.history.turns(), on_audio=on_audio)
+            except Exception as e:
+                print(f"[voice {label}] failed: {e}", flush=True)
+                message = f"音声AIで返事を作れませんでした（{e}）"
+                if streaming:
+                    self.store.update(streaming["id"], text=message)
+                else:
+                    self.store.add(message, request_id, None)
+                return None
+            if not result.audio:
+                print(f"[voice {label}] no audio in the reply", flush=True)
+                self.store.add(result.reply_text or "音声AIから音声が返りませんでした", request_id, None)
+                return None
+            audio_b64 = base64.b64encode(pcm_to_wav(result.audio, result.sample_rate)).decode("ascii")
+            # The final text and file must be stored before the stream ends: the iPhone reads them next.
+            if streaming:
+                reply = self.store.update(streaming["id"], text=result.reply_text, audio_base64=audio_b64)
+            else:
+                reply = self.store.add(result.reply_text, request_id, audio_b64)
+            self.history.append(result.user_text or payload.get("text") or "", result.reply_text)
+            print(f"[voice {label}] reply {reply['id']} done in {time.monotonic() - started:.1f}s: {result.reply_text[:60]}", flush=True)
+            return reply
+        finally:
+            if streaming:
+                self.streams.finish(streaming["id"])
+
+
+class AudioStreams:
+    """PCM of spoken replies, readable from the start while Gemini is still producing it."""
+
+    def __init__(self, keep=20, idle_timeout=30):
+        self.cond = threading.Condition()
+        self.streams = OrderedDict()
+        self.keep = keep
+        self.idle_timeout = idle_timeout
+
+    def open(self, reply_id, sample_rate):
+        with self.cond:
+            self.streams[reply_id] = {"chunks": [], "done": False, "rate": sample_rate}
+            finished = [k for k, v in self.streams.items() if v["done"]]
+            for k in finished[: max(0, len(finished) - self.keep)]:
+                del self.streams[k]
+
+    def append(self, reply_id, data):
+        with self.cond:
+            self.streams[reply_id]["chunks"].append(data)
+            self.cond.notify_all()
+
+    def finish(self, reply_id):
+        with self.cond:
+            if reply_id in self.streams:
+                self.streams[reply_id]["done"] = True
+                self.cond.notify_all()
+
+    def exists(self, reply_id):
+        with self.cond:
+            return reply_id in self.streams
+
+    def read(self, reply_id):
+        """Yields the stream's chunks from the beginning until it is finished (or stalls)."""
+        sent = 0
+        while True:
+            with self.cond:
+                stream = self.streams.get(reply_id)
+                if stream is None:
+                    return
+                if sent >= len(stream["chunks"]) and not stream["done"]:
+                    self.cond.wait(self.idle_timeout)
+                chunks = stream["chunks"][sent:]
+                done = stream["done"]
+            if not chunks and not done:
+                return
+            for chunk in chunks:
+                yield chunk
+            sent += len(chunks)
+            if done and sent >= len(stream["chunks"]):
+                return
 
 
 class ReplyStore:
@@ -217,7 +292,8 @@ class ReplyStore:
             with open(path, encoding="utf-8") as f:
                 self.replies = [json.loads(line) for line in f if line.strip()]
 
-    def add(self, text, request_id, audio_b64):
+    def add(self, text, request_id, audio_b64, sample_rate=None):
+        """With [sample_rate], the reply is announced before its audio exists: the iPhone streams it."""
         with self.lock:
             next_id = (self.replies[-1]["id"] + 1) if self.replies else 1
             reply = {
@@ -227,13 +303,32 @@ class ReplyStore:
                 "audio_base64": audio_b64,
                 "created_at": int(time.time() * 1000),
             }
+            if sample_rate:
+                reply["stream"] = f"/replies/{next_id}/stream"
+                reply["sample_rate"] = sample_rate
             self.replies = (self.replies + [reply])[-MAX_REPLIES:]
-            tmp = self.path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                for r in self.replies:
-                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
-            os.replace(tmp, self.path)
+            self._write()
             return reply
+
+    def update(self, reply_id, **fields):
+        with self.lock:
+            for reply in self.replies:
+                if reply["id"] == reply_id:
+                    reply.update(fields)
+                    self._write()
+                    return reply
+            return None
+
+    def get(self, reply_id):
+        with self.lock:
+            return next((r for r in self.replies if r["id"] == reply_id), None)
+
+    def _write(self):
+        tmp = self.path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            for r in self.replies:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        os.replace(tmp, self.path)
 
     def after(self, cursor):
         with self.lock:
@@ -258,10 +353,15 @@ def make_handler(store, token, relay=None, voice=None):
 
         def do_GET(self):
             url = urlparse(self.path)
-            if url.path != "/replies":
+            parts = url.path.strip("/").split("/")
+            if parts[0] != "replies" or len(parts) > 3 or (len(parts) == 3 and parts[2] != "stream"):
                 return self._send(404, {"error": "not found"})
             if not self._authorized():
                 return self._send(401, {"error": "unauthorized"})
+            if len(parts) > 1:
+                if not parts[1].isdigit():
+                    return self._send(404, {"error": "not found"})
+                return self._stream(int(parts[1])) if len(parts) == 3 else self._reply(int(parts[1]))
             after = parse_qs(url.query).get("after", [None])[0]
             try:
                 cursor = int(after) if after is not None else None
@@ -318,6 +418,28 @@ def make_handler(store, token, relay=None, voice=None):
             print(f"[webhook {payload['request_id']}] {text[:60]}", flush=True)
             self._send(200, {"status": "queued"})
 
+        def _reply(self, reply_id):
+            reply = store.get(reply_id)
+            if reply is None:
+                return self._send(404, {"error": "not found"})
+            self._send(200, reply)
+
+        def _stream(self, reply_id):
+            streams = voice.streams if voice else None
+            if streams is None or not streams.exists(reply_id):
+                return self._send(404, {"error": "no stream"})
+            self.send_response(200)
+            self.send_header("Content-Type", f"audio/L16; rate={streams.streams[reply_id]['rate']}; channels=1")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                for chunk in streams.read(reply_id):
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
         def _voice(self, audio, text):
             payload = {"audio": audio, "text": text, "request_id": self.headers.get("X-Index-Delivery")}
             if not voice.enqueue(payload):
@@ -326,7 +448,7 @@ def make_handler(store, token, relay=None, voice=None):
             self._send(200, {"status": "voice queued"})
 
         def log_message(self, fmt, *args):
-            if not self.path.startswith("/replies?") and not self.path == "/replies":
+            if not self.path.startswith("/replies?") and self.path != "/replies":
                 super().log_message(fmt, *args)
 
     return Handler
