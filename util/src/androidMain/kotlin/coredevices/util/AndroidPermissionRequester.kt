@@ -204,7 +204,7 @@ private fun Permission.asAndroidPermissions(): List<String> = when (this) {
     Permission.ReadPhoneState -> listOf(Manifest.permission.READ_PHONE_STATE)
     Permission.ReadNotifications -> throw IllegalArgumentException("Shouldn't be calling this")
     Permission.RecordAudio -> listOf(Manifest.permission.RECORD_AUDIO)
-    Permission.SpeechRecognizer -> throw IllegalArgumentException("SpeechRecognizer not needed on Android")
+    Permission.SpeechRecognizer -> listOf(Manifest.permission.RECORD_AUDIO)
     Permission.ExternalStorage -> if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && CommonBuildKonfig.QA) {
         listOf(
             Manifest.permission.WRITE_EXTERNAL_STORAGE,

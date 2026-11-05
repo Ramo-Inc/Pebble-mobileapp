@@ -6,8 +6,8 @@ import kotlinx.coroutines.flow.StateFlow
 const val PLATFORM_STT_MODEL_NAME = "platform-native"
 
 /**
- * OS-native on-device speech recognition. On iOS this is Apple's
- * SpeechAnalyzer/SpeechTranscriber (iOS 26+); not implemented on Android yet.
+ * OS-native speech recognition: Apple's SpeechAnalyzer/SpeechTranscriber on iOS 26+, and
+ * Android's SpeechRecognizer on API 33+.
  */
 expect class PlatformSpeechRecognizer() {
     suspend fun isAvailable(): Boolean

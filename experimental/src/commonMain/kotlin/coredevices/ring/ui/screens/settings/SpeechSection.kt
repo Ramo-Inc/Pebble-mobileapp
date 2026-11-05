@@ -73,7 +73,7 @@ internal val indexSpeechModes: List<CactusSTTMode> = listOf(
 )
 
 internal fun CactusSTTMode.speechEngineName(): String = when (this) {
-    CactusSTTMode.PlatformOnly -> "iOS Speech Recognition"
+    CactusSTTMode.PlatformOnly -> "Built-in Speech Recognition"
     CactusSTTMode.RemoteOnly -> "Cloud only"
     CactusSTTMode.RemoteFirst -> "Cloud, with local fallback (Recommended)"
     CactusSTTMode.LocalFirst -> "Local, cloud fallback"
